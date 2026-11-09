@@ -20,6 +20,8 @@ export const POST = route(async (req) => {
     req,
     z.object({ mandateId: z.string(), productId: z.string(), quantity: z.number().int().min(1).max(1000), reason: z.string().max(500).default("") }),
   );
-  const r = await requestPurchase({ ...b, actor, idempotencyKey: req.headers.get("idempotency-key") ?? undefined });
+  const key = req.headers.get("idempotency-key");
+  // Scoped to the caller, so a key can only ever return the caller's own purchase.
+  const r = await requestPurchase({ ...b, actor, idempotencyKey: key ? `${actor}:${key}` : undefined });
   return json({ purchase: await getPurchaseDto(r.purchase.id), receipt: await getReceipt(r.purchase.id), approval: r.approval }, 201);
 });

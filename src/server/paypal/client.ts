@@ -271,3 +271,9 @@ export async function getCapture(captureId: string) {
   const res = await request<{ id: string; status: string }>("GET", `/v2/payments/captures/${captureId}`);
   return { captureId: res.id, status: res.status };
 }
+
+/** A refund's own status: COMPLETED, PENDING, FAILED or CANCELLED. */
+export async function getRefund(refundId: string) {
+  const res = await request<{ id: string; status: string }>("GET", `/v2/payments/refunds/${refundId}`);
+  return { refundId: res.id, status: res.status };
+}

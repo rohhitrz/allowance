@@ -29,6 +29,8 @@ export function purchaseDto(p: PurchaseRow, approvalId?: string | null) {
       debugId: p.paypalDebugId ?? undefined,
     },
     failureReason: p.failureReason,
+    /** PayPal work still in progress (retrying a capture or void, a pending capture or refund). Not a failure. */
+    recovery: p.recovery ? { state: p.recovery, attempts: p.recoveryAttempts, note: p.recoveryNote } : undefined,
     summary: receiptSummary(p),
     approvalId: approvalId ?? undefined,
     createdAt: p.createdAt,

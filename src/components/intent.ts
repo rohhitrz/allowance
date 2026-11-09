@@ -45,7 +45,7 @@ export function isApprove(t: string): boolean {
  * "Stop and Shop gift card", "a rubber door stop". Negated forms ("approve, don't stop") never count.
  */
 const STOP_WORD = "(?:stop|freeze|halt)";
-const FILLER = "(?:please|ok(?:ay)?|now|just|right|immediately|all|it|this|that|the agent|the bot|shopping|buying|spending|paying)";
+const FILLER = "(?:please|ok(?:ay)?|now|just|right|immediately|all|it|this|that|the|my|any|every|agents?|bots?|shopping|buying|spending|paying|money|purchases?|purchasing|orders?|ordering|payments?|transactions?|charges?|checkouts?)";
 const WHOLE_SENTENCE_STOP = new RegExp(String.raw`^\W*(?:${FILLER}\W+)*${STOP_WORD}(?:\W+${FILLER})*\W*$`, "i");
 
 export function isStop(t: string): boolean {

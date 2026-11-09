@@ -16,7 +16,10 @@ export function receiptSummary(p: PurchaseRow): string {
     case "HELD":
       return `Held for your approval: ${soft.map((r) => r.detail).join("; ")}. PayPal authorization ${p.paypalAuthorizationId} is on hold.`;
     case "CAPTURED":
-      if (p.failureReason?.startsWith("capture PENDING")) {
+      if (p.recovery === "refund_pending") {
+        return `Refund requested for ${what}. PayPal refund ${p.paypalRefundId} is still PENDING; it counts as spent until it completes.`;
+      }
+      if (p.recovery === "capture_pending") {
         return `Approved ${what}. PayPal capture ${p.paypalCaptureId} is still PENDING and can still be declined.`;
       }
       return `Approved ${what}${soft.length ? ` after your approval (${soft.map((r) => r.detail).join("; ")})` : `: passed all ${p.ruleResults.length} rules`}. PayPal captured ${p.paypalCaptureId}.`;
@@ -26,6 +29,10 @@ export function receiptSummary(p: PurchaseRow): string {
       return `PayPal failed for ${what}: ${p.failureReason}. No money moved.`;
     case "REFUNDED":
       return `Refunded ${what}. PayPal refund ${p.paypalRefundId}.`;
+    case "AUTHORIZED":
+      if (p.recovery === "capture_retry") return `Approved ${what}. PayPal couldn't take the capture yet; retrying (${p.recoveryNote}).`;
+      if (p.recovery === "void_retry") return `Releasing ${what}. PayPal hasn't confirmed the void yet; retrying (${p.recoveryNote}).`;
+      return `Authorized ${what} on PayPal (${p.paypalAuthorizationId}).`;
     case "RESERVED":
       return p.paypalApproveUrl
         ? `Reserved ${what}; waiting for the buyer to approve in PayPal.`

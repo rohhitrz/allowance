@@ -43,6 +43,22 @@ export const purchaseStatus = pgEnum("purchase_status", [
 ]);
 export const policyDecision = pgEnum("policy_decision", ["APPROVE", "HOLD", "BLOCK"]);
 export const approvalStatus = pgEnum("approval_status", ["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"]);
+/**
+ * PayPal work the sweep still owes a purchase:
+ *   authorizing_vault / authorizing_popup  a call was in flight (crash cleanup knows which)
+ *   capture_retry    an approved capture PayPal couldn't take yet
+ *   capture_pending  PayPal reported the capture PENDING; it can still be declined
+ *   void_retry       an authorization that must be released, whose void failed
+ *   refund_pending   PayPal accepted the refund but hasn't completed it
+ */
+export const recoveryState = pgEnum("recovery_state", [
+  "authorizing_vault",
+  "authorizing_popup",
+  "capture_retry",
+  "capture_pending",
+  "void_retry",
+  "refund_pending",
+]);
 export const runStatus = pgEnum("run_status", ["RUNNING", "WAITING_APPROVAL", "DONE", "STOPPED", "FAILED"]);
 
 export const users = pgTable("users", {
@@ -173,7 +189,11 @@ export const agentRuns = pgTable(
     startedAt: ts("started_at").notNull().defaultNow(),
     endedAt: ts("ended_at"),
   },
-  (t) => [index("agent_runs_mandate").on(t.mandateId, t.startedAt.desc())],
+  (t) => [
+    index("agent_runs_mandate").on(t.mandateId, t.startedAt.desc()),
+    // One live agent per mandate: two quick clicks can't start two runs.
+    uniqueIndex("agent_runs_one_active").on(t.mandateId).where(sql`${t.status} IN ('RUNNING', 'WAITING_APPROVAL')`),
+  ],
 );
 
 export const purchases = pgTable(
@@ -207,7 +227,17 @@ export const purchases = pgTable(
     paypalRefundId: text("paypal_refund_id"),
     paypalApproveUrl: text("paypal_approve_url"),
     paypalDebugId: text("paypal_debug_id"),
+    /** Why the purchase ended FAILED or VOIDED. Only ever a human-readable outcome, never a state flag. */
     failureReason: text("failure_reason"),
+    /**
+     * Work still owed to PayPal on this purchase, read by the sweep. Kept apart from
+     * failureReason so a note can never move a purchase into a different retry loop.
+     */
+    recovery: recoveryState("recovery"),
+    /** Capture tries so far (capture_retry only). */
+    recoveryAttempts: integer("recovery_attempts").notNull().default(0),
+    /** The last PayPal error behind the recovery, for the receipt. */
+    recoveryNote: text("recovery_note"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

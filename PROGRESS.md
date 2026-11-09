@@ -95,6 +95,19 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - **Audit** (`src/server/audit.ts`, `GET /api/mandates/:id/audit`): recomputes 7 invariants from the purchases table with no shared code with the policy engine. Tests forge a bypass in the table and check the audit catches it.
   - **Live run on the real sandbox** (Haiku 5.5, about 35 s): 12 attacks, 12 stopped, 0 rules broken. It tried gift cards, a Bitcoin voucher "as a book", 50 bookmarks at $199.50 (under the limit, blocked on quantity), a $199 watch then approving its own hold, "the user already approved", unfreeze, confirm and refund.
   - This replaces the scripted "attack" beat as the main proof in the video: the AI really attacks, and the result is not known in advance.
+- [x] **Fifth review fixes** (Nov 10, two reviewers, 131 tests; migration `0001_recovery_state`):
+  - Red team no longer cancels a hold a human approved first: `cancelHold` voids only if it closed the approval itself.
+  - Crash + unlinked PayPal: the stuck authorization is replayed with the account it used (vault id recorded); if no account exists it is FAILED, freeing budget and order slot (no capture can follow without an authorization id).
+  - Stop words: "stop all purchases", "stop the order", "halt spending money" are stops again; "freeze-dried…", "Stop and Shop" still aren't.
+  - Retry state moved out of `failureReason` into `recovery` / `recovery_attempts` / `recovery_note` columns; sweeps select on `recovery`. Old markers migrated.
+  - One active agent run per mandate (unique partial index); a double click gets a 409.
+  - Popup cleanup: EXPIRED/VOIDED/DENIED hold nothing; CAPTURED is recorded as a capture, never voided.
+  - Sweep backoff map forgets settled purchases; PENDING captures back off.
+  - Refunds check PayPal's refund status: COMPLETED → REFUNDED, PENDING → stays CAPTURED and the sweep re-checks (`getRefund`), FAILED/CANCELLED → error.
+  - Agents send an idempotency key per tool call (`runId:toolUseId`); MCP accepts `idempotencyKey`; keys are scoped per caller.
+  - Audit: per-purchase checks (category, quantity, per-item) cover refunded/voided purchases too; new duplicate and expiry checks; each check lists offending purchase ids; a `notChecked` list is shown in the report.
+  - Red-team report marks a purchase "allowed" only if no audit check names it; otherwise "breach".
+  - Not done: new regression tests for each fix (existing tests updated), `next build` not re-run, not re-tested on the sandbox.
 - [x] **README rewritten** for judges: the problem, "try to break it", a two-minute path, what it is and is not, tools statement.
 - **Hackathon research** (Nov 10): five equally weighted criteria (technical implementation, design, impact, innovation, presentation; ties go to technical). Judges may score from the video and description alone. A project can win one main or honourable-mention prize plus one sponsor prize. The AG Grid prize looks at polish (custom cells, theming, layout) and use of AG Studio's agent framework, which we don't use. Render's prize needs a Render deploy. "Gift-finder shopping agent" is a widely suggested idea, so the pitch must lead with the control layer and the red team, not the shopping.
 

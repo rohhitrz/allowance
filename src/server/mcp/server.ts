@@ -101,12 +101,22 @@ export function buildMcpServer(client: Client) {
   server.registerTool(
     "request_purchase",
     {
-      description: "Ask to buy a product from a mandate. Allowance checks every rule in code before any money moves, then pays with PayPal. Result: CAPTURED (bought), HELD (a human is asked; you cannot approve holds), BLOCKED (not allowed, PayPal never called) or FAILED.",
-      inputSchema: { mandateId: z.string(), productId: z.string(), quantity: z.number().int().min(1).max(1000), reason: z.string().max(500) },
+      description:
+        "Ask to buy a product from a mandate. Allowance checks every rule in code before any money moves, then pays with PayPal. Result: CAPTURED (bought), HELD (a human is asked; you cannot approve holds), BLOCKED (not allowed, PayPal never called) or FAILED. " +
+        "Send a fresh idempotencyKey for each purchase you mean to make, and the same key when retrying it: a retry then returns the first result instead of buying again.",
+      inputSchema: {
+        mandateId: z.string(),
+        productId: z.string(),
+        quantity: z.number().int().min(1).max(1000),
+        reason: z.string().max(500),
+        idempotencyKey: z.string().min(8).max(200).optional(),
+      },
     },
-    wrap(async ({ mandateId, productId, quantity, reason }) => {
+    wrap(async ({ mandateId, productId, quantity, reason, idempotencyKey }) => {
       await ownedMandate(client, mandateId);
-      const r = await requestPurchase({ mandateId, productId, quantity, reason, actor: client.actor });
+      // Keys are scoped to this client, so one client's key can never return another's purchase.
+      const key = idempotencyKey ? `${client.actor}:${idempotencyKey}` : undefined;
+      const r = await requestPurchase({ mandateId, productId, quantity, reason, actor: client.actor, idempotencyKey: key });
       const receipt = await getReceipt(r.purchase.id);
       return text({ purchaseId: r.purchase.id, status: r.purchase.status, message: purchaseMessage(r), receiptSummary: receipt.summary, ruleResults: receipt.ruleResults });
     }),

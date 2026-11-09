@@ -17,7 +17,7 @@ import { failedRules } from "../policy/engine";
 import { getProduct, searchCatalog } from "../catalog/service";
 import { getMandate } from "../mandates/service";
 import { requestPurchase, retryOpenVoids, sweepExpiredApprovals, type PurchaseResult } from "../transactions/service";
-import { AppError } from "../errors";
+import { AppError, insertRunOnce } from "../errors";
 import { getReceipt } from "../receipts";
 
 /**
@@ -186,7 +186,7 @@ export async function startRun(args: { mandateId: string; brief?: string; hooks?
   if (mandate.status !== "ACTIVE") throw new AppError("INVALID_STATE", `Mandate is ${mandate.status}`);
   const runId = id("run");
   const brief = args.brief ?? mandate.brief;
-  await db().insert(agentRuns).values({ id: runId, mandateId: mandate.id, brief, model: AGENT_MODEL });
+  await insertRunOnce(() => db().insert(agentRuns).values({ id: runId, mandateId: mandate.id, brief, model: AGENT_MODEL }));
   await recordEvent(db(), { actor: ACTOR, type: "run.started", mandateId: mandate.id, data: { runId, brief } });
   const done = runAgent(runId, mandate, brief, args.hooks ?? {});
   return { runId, done };
@@ -241,7 +241,7 @@ async function runAgent(runId: string, mandate: Awaited<ReturnType<typeof getMan
         let output: string;
         let isError = false;
         try {
-          output = await executeTool(call.name, input, { runId, mandateId: mandate.id, hooks, onPurchase: (p) => (lastPurchase = p) });
+          output = await executeTool(call.name, input, { runId, mandateId: mandate.id, callId: call.id, hooks, onPurchase: (p) => (lastPurchase = p) });
         } catch (e) {
           isError = true;
           output = e instanceof Error ? e.message : String(e);
@@ -269,7 +269,7 @@ async function runAgent(runId: string, mandate: Awaited<ReturnType<typeof getMan
 async function executeTool(
   name: string,
   input: Record<string, unknown>,
-  ctx: { runId: string; mandateId: string; hooks: RunHooks; onPurchase: (p: PurchaseResult) => void },
+  ctx: { runId: string; mandateId: string; callId: string; hooks: RunHooks; onPurchase: (p: PurchaseResult) => void },
 ): Promise<string> {
   if (name === "search_catalog") {
     const rows = await searchCatalog({
@@ -294,6 +294,9 @@ async function executeTool(
       reason: String(input.reason ?? ""),
       actor: ACTOR,
       runId: ctx.runId,
+      // One key per tool call: replaying the same call returns the same purchase, while a new
+      // call is a deliberate new order (and the max-orders / no-duplicate rules judge it).
+      idempotencyKey: `${ctx.runId}:${ctx.callId}`,
     });
     ctx.onPurchase(r);
     if (r.purchase.status === "HELD") {

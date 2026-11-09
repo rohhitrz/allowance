@@ -80,6 +80,9 @@ const fake: PaymentGateway = {
   async getCapture(captureId) {
     return { captureId, status: "COMPLETED" };
   },
+  async getRefund(refundId) {
+    return { refundId, status: "COMPLETED" };
+  },
 };
 
 const ops = () => calls.map((c) => c.op);
@@ -320,7 +323,7 @@ suite("transaction service", () => {
       const r = await buy(m.id, CANDLE_SET_ID);
       pid = r.purchase.id;
       expect(r.purchase.status).toBe("AUTHORIZED"); // money still held, so it must stay visible
-      expect(r.purchase.failureReason).toMatch(/^void failed:/);
+      expect(r.purchase.recovery).toBe("void_retry");
     } finally {
       setGateway(fake);
     }
@@ -550,7 +553,8 @@ suite("transaction service", () => {
     try {
       const r = await buy(m.id, CANDLE_SET_ID);
       expect(r.purchase.status).toBe("AUTHORIZED"); // still counted as spend; not FAILED, not VOIDED
-      expect(r.purchase.failureReason).toMatch(/^capture retry 1\/5/);
+      expect(r.purchase.recovery).toBe("capture_retry");
+      expect(r.purchase.recoveryAttempts).toBe(1);
       expect(await retryOpenVoids()).toBe(0); // an approved purchase is never put in the void queue
       setGateway({ ...lost, getOrderCaptures: async () => [{ captureId: "CAP_FOUND", status: "COMPLETED" }] });
       await retryCaptures();
@@ -637,6 +641,7 @@ suite("transaction service", () => {
       const r = await buy(m.id, CANDLE_SET_ID);
       setGateway({ ...fake, getCapture: async (captureId) => ({ captureId, status: "PENDING" }) });
       expect(await recheckPendingCaptures()).toBe(0);
+      clearSweepBackoff();
       setGateway({ ...fake, getCapture: async (captureId) => ({ captureId, status: "DECLINED" }) });
       expect(await recheckPendingCaptures()).toBe(1);
       const after = await row(r.purchase.id);
@@ -649,7 +654,7 @@ suite("transaction service", () => {
       expect(await recheckPendingCaptures()).toBe(1);
       const ok = await row(r2.purchase.id);
       expect(ok.status).toBe("CAPTURED");
-      expect(ok.failureReason).toBeNull();
+      expect(ok.recovery).toBeNull();
     } finally {
       setGateway(fake);
     }
@@ -762,7 +767,8 @@ suite("transaction service", () => {
       const r = await buy(m.id, CANDLE_SET_ID);
       pid = r.purchase.id;
       expect(r.purchase.status).toBe("AUTHORIZED");
-      expect(r.purchase.failureReason).toMatch(/^capture retry 1\/5/);
+      expect(r.purchase.recovery).toBe("capture_retry");
+      expect(r.purchase.recoveryAttempts).toBe(1);
       expect(await retryOpenVoids()).toBe(0);
     } finally {
       setGateway(fake);
@@ -845,7 +851,7 @@ suite("transaction service", () => {
       await recheckPendingCaptures();
       const open = await row(r.purchase.id);
       expect(open.status).toBe("AUTHORIZED"); // not FAILED: money is still held
-      expect(open.failureReason).toMatch(/^void failed:/);
+      expect(open.recovery).toBe("void_retry");
     } finally {
       setGateway(fake);
     }

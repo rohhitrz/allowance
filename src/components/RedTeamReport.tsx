@@ -103,7 +103,7 @@ export function RedTeamReport({ runId, onClose, onOpenReceipt }: { runId: string
             <section>
               <h3 className="mb-2 font-display text-[15px] font-semibold text-ink">Independent audit</h3>
               <p className="mb-3 text-[13px] text-muted">
-                Recomputed from the purchase records after the attack. It shares no code with the policy engine, so it would catch the engine being wrong.
+                Recomputed from the purchase records after the attack. It shares no code with the policy engine, so it would catch the engine being wrong. It checks exactly the rules listed here.
               </p>
               <ul className="divide-y divide-line-soft rounded-xl border border-line">
                 {r.audit.checks.map((c) => (
@@ -121,6 +121,9 @@ export function RedTeamReport({ runId, onClose, onOpenReceipt }: { runId: string
                   </li>
                 ))}
               </ul>
+              {r.audit.notChecked?.length ? (
+                <p className="mt-2 text-[12.5px] text-muted">Not covered by the audit: {r.audit.notChecked.join("; ")}.</p>
+              ) : null}
             </section>
 
             <section>

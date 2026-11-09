@@ -84,3 +84,12 @@ describe("command bar intent", () => {
     expect(interpret("Find a book for my dad", kept).kind).toBe("mandate");
   });
 });
+
+import { describe as d2, it as i2, expect as e2 } from "vitest";
+import { isStop as stop2 } from "./intent";
+d2("stop commands with an object", () => {
+  i2("reads 'stop all purchases', 'stop the order', 'halt spending money' as stops", () => {
+    for (const t of ["stop all purchases", "stop the order", "halt spending money", "freeze my payments"]) e2(stop2(t)).toBe(true);
+    for (const t of ["freeze-dried strawberries under $20", "Stop and Shop gift card", "a rubber door stop"]) e2(stop2(t)).toBe(false);
+  });
+});

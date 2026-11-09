@@ -16,6 +16,7 @@ export type PaymentGateway = Pick<
   | "getOrderCaptures"
   | "getOrderAuthorizations"
   | "getCapture"
+  | "getRefund"
 >;
 
 let current: PaymentGateway = paypal;

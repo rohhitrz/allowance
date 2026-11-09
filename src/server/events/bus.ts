@@ -28,6 +28,8 @@ export type EventType =
   | "purchase.voided"
   | "purchase.failed"
   | "purchase.refunded"
+  | "purchase.refund_pending"
+  | "purchase.refund_failed"
   | "approval.created"
   | "approval.decided"
   | "approval.expired"
