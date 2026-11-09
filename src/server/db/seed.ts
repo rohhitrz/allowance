@@ -54,6 +54,15 @@ const CATALOG: Seed[] = [
   p("prd_diffuser", "Ceramic Aroma Diffuser", "home", 49, 4.2, "Ultrasonic mist with soft ambient light"),
   p("prd_perfume", "Signature Eau de Parfum", "fashion", 145, 4.5, "Floral and amber notes, 50 ml"),
   p("prd_handbag", "Leather Crossbody Handbag", "fashion", 250, 4.4, "Full-grain leather, adjustable strap"),
+  // small gifts under $10 (thank-yous, sympathy, stocking fillers)
+  p("prd_sympathy_card", "Thinking of You Sympathy Card", "gifts", 4.5, 4.7, "Letterpress card with envelope, blank inside"),
+  p("prd_chocolate_bar", "Single-Origin Dark Chocolate Bar", "gifts", 4.25, 4.6, "72% cacao, gift-wrapped"),
+  p("prd_tea_sachets", "Chamomile Calm Tea, 10 Sachets", "gifts", 6.99, 4.5, "Caffeine-free, in a small gift tin"),
+  p("prd_bookmark", "Pressed-Flower Bookmark", "books", 3.99, 4.6, "Real pressed flowers under glass-clear laminate"),
+  p("prd_book_pocket_poems", "Pocket Book of Comfort Poems (Paperback)", "books", 8.99, 4.7, "Short poems on loss, hope and friendship"),
+  p("prd_tealights", "Unscented Tea Lights, 24-pack", "home", 5.49, 4.5, "Eight-hour burn, aluminium cups"),
+  p("prd_memorial_candle", "Remembrance Candle in Glass", "home", 9.5, 4.8, "Soy wax, 24-hour burn, simple white jar"),
+  p("prd_succulent", "Mini Succulent in Ceramic Pot", "home", 7.99, 4.4, "Low-care plant, 3-inch pot"),
   p("prd_puzzle", "1000-Piece Art Jigsaw Puzzle", "toys", 24, 4.4, "Museum-print puzzle in a keepsake box"),
   p("prd_board_game", "Strategy Board Game", "toys", 42, 4.7, "Award-winning game for 2-5 players"),
   {
