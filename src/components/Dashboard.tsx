@@ -77,7 +77,9 @@ export function Dashboard() {
     const paypal = q.get("paypal");
     if (paypal === "error") flash(`PayPal checkout failed: ${q.get("message") ?? ""}`);
     else if (paypal === "cancelled") flash("PayPal checkout cancelled. The reservation was released.", "info");
-    else if (paypal) flash(`PayPal approved. The purchase is now ${paypal}.`, "info");
+    else if (paypal === "captured") flash("Approved in PayPal. The purchase is paid.", "info");
+    else if (paypal === "held") flash("Approved in PayPal. It's over a soft rule, so it's waiting for your approval here.", "info");
+    else if (paypal) flash(`PayPal checkout did not complete: the purchase is ${paypal}.`);
     if (q.get("purchase")) setOpenId(q.get("purchase"));
     if (paypal || q.get("vault")) window.history.replaceState(null, "", "/");
   }, [loadAll, flash]);

@@ -333,6 +333,11 @@ export async function completeFallbackAuthorization(purchaseId: string, actor: s
     r = await gateway().authorizeOrder({ orderId: p.paypalOrderId, requestId: `${p.id}:authorize` });
     if (!r.authorizationId) throw new Error("No authorization returned");
   } catch (e) {
+    // The buyer hasn't approved yet (e.g. came back early): nothing is lost. Keep the
+    // reservation so they can still approve; it is released after POPUP_TTL_MS otherwise.
+    if (e instanceof PayPalError && /ORDER_NOT_APPROVED/.test(e.message)) {
+      throw new AppError("INVALID_STATE", "This purchase hasn't been approved in PayPal yet");
+    }
     await fail(p, e, ["RESERVED"]);
     return result(p.id);
   }

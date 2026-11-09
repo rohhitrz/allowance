@@ -57,7 +57,7 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - **Browser proof** (Nov 10 night, real sandbox): scripted beats from the UI: hold → "reject" typed in the command bar → VOIDED; candle CAPTURED; 5 gift cards BLOCKED (receipt: 4 hard rules, "PayPal never called"); kill switch froze 2 mandates, retry BLOCKED; refund from the receipt drawer → REFUNDED, spend back to $0. Live Claude: typed a housewarming mandate → read-back → "yes" → agent bought a $45 herb garden kit. API: hold → approve → CAPTURED; repeat decision is a no-op. MCP via curl: unauthenticated → 401; tools/list; bought 2 × coffee beans on the grocery mandate → CAPTURED, and it appeared live in the open dashboard.
   - Tests: 70 pass (adds auth tests). `next build` passes.
 
-- [x] **Third review fixes** (Nov 11), 98 tests pass, build passes. Tested with the fake PayPal gateway only; **not yet re-run on the real sandbox or in the browser.**
+- [x] **Third review fixes** (Nov 11), 98 tests pass, build passes. 99 tests now. Rehearsed on the real sandbox in the browser afterwards (see below).
   - A failed capture or void now asks PayPal what really happened before acting: a charge whose responses were lost is recorded as CAPTURED with its capture id (refundable); a hold PayPal already voided is recorded as VOIDED.
   - A reservation stuck mid-authorize (server died) is recovered by re-sending the authorize call with the same request id, then voided, instead of being marked FAILED on a guess.
   - PENDING captures are re-checked every sweep: COMPLETED clears the flag, DECLINED/FAILED marks the purchase FAILED and frees the budget.
@@ -68,8 +68,11 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Removed the unused `approval.token` event; humans decide by approval id. Dashboard uses the server's money formatter. README updated.
   - Not changed: a freeze arriving just before a capture can still let that capture through (documented in the README, not fixed).
 
+  - **Sandbox rehearsal after the fixes** (Nov 11): hold → voice reject with no id → VOIDED; candle CAPTURED; gift cards BLOCKED; "Approve, don't stop" typed in the command bar → CAPTURED, no freeze. PayPal's real answers match what the reconcile code expects: a captured authorization reads `CAPTURED` and the order lists its capture id; a voided one reads `VOIDED`, and voiding it again returns 422 `PREVIOUSLY_VOIDED`.
+  - **Popup checkout on the sandbox, up to PayPal's login**: with the vault unlinked, purchases come back RESERVED with a real `sandbox.paypal.com` approve link and the "Finish in PayPal" card shows. Returning without approving keeps the reservation (PayPal says `ORDER_NOT_APPROVED`); Cancel marks it FAILED and frees the budget. **Not done: actually approving as the sandbox buyer**, which needs a human to sign in to PayPal.
+
 ## Next up
-0. Rehearse the full story on the real sandbox in the browser after the review fixes, including the popup checkout with a sandbox buyer.
+0. Popup checkout: unlink the vault, click "Approve in PayPal", sign in as the sandbox buyer and confirm it lands back CAPTURED. Only needed if the demo won't use the vault.
 
 1. Deploy to Render (web service + Postgres): set `APP_PASSCODE`, `MCP_API_KEY`, `APP_BASE_URL`, `PAYPAL_DEMO_VAULT_ID` (+ email); run `npm run db:migrate` then a demo reset on deploy. Test in a private window.
 2. Voice: decide Vapi vs staying on browser speech. Browser speech works now in Chrome (needs mic permission). If Vapi: create the assistant with `VAPI_TOOL_DEFS`, point it at `/api/voice/tools`, set `VAPI_WEBHOOK_SECRET`.

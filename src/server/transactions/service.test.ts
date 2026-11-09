@@ -713,4 +713,17 @@ suite("transaction service", () => {
     await runDemoStep("mandate");
     await expect(runDemoStep("mandate")).rejects.toMatchObject({ code: "INVALID_STATE" });
   });
+  it("coming back from PayPal before approving keeps the reservation; it can still be approved", async () => {
+    await db().update(paypalVaults).set({ status: "REVOKED" });
+    const m = await giftMandate();
+    const r = await buy(m.id, CANDLE_SET_ID);
+    setGateway({ ...fake, authorizeOrder: async () => Promise.reject(new PayPalError("POST /authorize failed (422): ORDER_NOT_APPROVED", 422)) });
+    try {
+      await expect(completeFallbackAuthorization(r.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "INVALID_STATE" });
+      expect((await row(r.purchase.id)).status).toBe("RESERVED");
+    } finally {
+      setGateway(fake);
+    }
+    expect((await completeFallbackAuthorization(r.purchase.id, "user:dashboard")).purchase.status).toBe("CAPTURED");
+  });
 });
