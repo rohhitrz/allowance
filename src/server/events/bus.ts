@@ -3,7 +3,7 @@
  * One app instance, so an EventEmitter is enough.
  */
 import { EventEmitter } from "node:events";
-import type { Conn } from "../db";
+import { db, type Conn, type Tx } from "../db";
 import { events, type EventRow } from "../db/schema";
 
 export type Actor = `user:${string}` | `mcp:${string}` | "agent:allowance" | "system";
@@ -36,6 +36,23 @@ export type EventType =
 const g = globalThis as unknown as { __allowanceBus?: EventEmitter };
 export const bus: EventEmitter = (g.__allowanceBus ??= new EventEmitter().setMaxListeners(100));
 
+/** Events recorded inside an open transaction wait here until it commits. */
+const pendingByTx = new WeakMap<object, (() => void)[]>();
+
+/**
+ * Run fn in a DB transaction. Events (and any after-commit callbacks) go to live
+ * listeners only once it commits; if it rolls back, they're dropped.
+ */
+export async function inTransaction<T>(fn: (tx: Tx, afterCommit: (cb: () => void) => void) => Promise<T>): Promise<T> {
+  const pending: (() => void)[] = [];
+  const result = await db().transaction(async (tx) => {
+    pendingByTx.set(tx, pending);
+    return fn(tx, (cb) => pending.push(cb));
+  });
+  for (const cb of pending) cb();
+  return result;
+}
+
 export async function recordEvent(
   conn: Conn,
   ev: { actor: string; type: EventType; mandateId?: string; purchaseId?: string; data?: Record<string, unknown> },
@@ -50,6 +67,8 @@ export async function recordEvent(
       data: ev.data ?? {},
     })
     .returning();
-  bus.emit("event", row);
+  const pending = pendingByTx.get(conn);
+  if (pending) pending.push(() => bus.emit("event", row));
+  else bus.emit("event", row);
   return row;
 }

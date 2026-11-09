@@ -13,6 +13,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 Start every session by reading `PROGRESS.md`, then the relevant doc in `docs/` (PRD → system design → API → DB).
 
 - The policy engine decides whether money moves; it must never call an LLM.
-- Only the transaction service may call PayPal write APIs (authorize, capture, void, refund).
+- In app code, only the transaction service (`src/server/transactions/service.ts`) may call PayPal write APIs (authorize, capture, void, refund). The one exception is `scripts/paypal-spike.ts`, a standalone sandbox diagnostic that the app never imports.
 - Money is integer cents, USD only. Never commit `.env` or paste secrets anywhere.
 - After finishing a stage or a meaningful piece of work: update `PROGRESS.md` in plain words, then commit with a conventional message (`feat:`, `fix:`, `docs:`, `chore:`, `test:`).

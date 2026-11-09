@@ -49,6 +49,7 @@ describe("decisions", () => {
     { name: "exactly at hard limit holds (over budget)", in: input({ priceCents: 20000 }), decision: "HOLD", failed: ["budget"] },
     { name: "one cent over hard limit blocks", in: input({ priceCents: 20001 }), decision: "BLOCK", failed: ["budget", "hard_limit"] },
     { name: "category outside allowed list holds", in: input({ category: "toys" }), decision: "HOLD", failed: ["allowed_category"] },
+    { name: "empty allowed list allows nothing", in: input({ mandate: { allowedCategories: [] } }), decision: "HOLD", failed: ["allowed_category"] },
     { name: "no allowed list = any category", in: input({ category: "toys", mandate: { allowedCategories: null } }), decision: "APPROVE", failed: [] },
     { name: "blocked category blocks", in: input({ category: "crypto" }), decision: "BLOCK", failed: ["allowed_category", "blocked_category"] },
     { name: "frozen mandate blocks", in: input({ mandate: { status: "FROZEN" } }), decision: "BLOCK", failed: ["mandate_active"] },

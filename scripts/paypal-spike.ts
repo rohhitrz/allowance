@@ -1,5 +1,7 @@
 /**
  * PayPal sandbox spike: proves the payment assumptions in docs/02-system-design.md §7.
+ * Standalone diagnostic: the one sanctioned exception to "only the transaction service calls
+ * PayPal write APIs" (AGENTS.md). The app never imports this file; never call it from src/.
  *
  *   npm run spike -- check      OAuth works with your sandbox keys
  *   npm run spike -- setup      create a Vault setup token, prints a URL to approve as the sandbox BUYER

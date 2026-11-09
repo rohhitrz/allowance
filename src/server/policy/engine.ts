@@ -93,7 +93,8 @@ export function evaluate(input: PolicyInput): PolicyOutput {
           ? `${fmt(after)} within ${fmt(m.budgetCents)} budget`
           : `${fmt(after - m.budgetCents)} over ${fmt(m.budgetCents)} budget`,
     },
-    m.allowedCategories === null || m.allowedCategories.length === 0
+    // null = any category; an empty list allows nothing (never "anything goes").
+    m.allowedCategories === null
       ? { rule: "allowed_category", kind: "soft", passed: true, detail: "any category allowed" }
       : {
           rule: "allowed_category",
@@ -101,7 +102,9 @@ export function evaluate(input: PolicyInput): PolicyOutput {
           passed: m.allowedCategories.includes(product.category),
           detail: m.allowedCategories.includes(product.category)
             ? `${product.category} is allowed`
-            : `${product.category} is not in ${m.allowedCategories.join(", ")}`,
+            : m.allowedCategories.length
+              ? `${product.category} is not in ${m.allowedCategories.join(", ")}`
+              : "no categories are allowed",
         },
   ];
 

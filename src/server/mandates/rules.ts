@@ -54,7 +54,12 @@ export function applyDefaults(d: MandateDraftInput, opts: { now: Date; timezone:
 
   const norm = (xs: string[]) => [...new Set(xs.map((x) => x.trim().toLowerCase().replace(/\s+/g, "_")).filter(Boolean))];
   const blocked = norm([...LOCKED_BLOCKED_CATEGORIES, ...d.extraBlockedCategories]);
-  const allowed = d.allowedCategories && d.allowedCategories.length ? norm(d.allowedCategories).filter((c) => !blocked.includes(c)) : null;
+  let allowed: string[] | null = null;
+  if (d.allowedCategories && d.allowedCategories.length) {
+    allowed = norm(d.allowedCategories).filter((c) => !blocked.includes(c));
+    // Every allowed category is also blocked: refuse, rather than silently allowing anything.
+    if (!allowed.length) throw new Error("Every allowed category is also blocked");
+  }
 
   return {
     title: d.title.trim().slice(0, 120) || "Untitled mandate",

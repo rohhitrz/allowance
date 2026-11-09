@@ -45,6 +45,10 @@ describe("applyDefaults", () => {
     expect(r.expiresAt).toBeNull();
   });
 
+  it("refuses an allowed list that is entirely blocked (never 'any category')", () => {
+    expect(() => applyDefaults({ ...base, allowedCategories: ["gift cards", "crypto"] }, opts)).toThrow(/also blocked/);
+  });
+
   it("rejects nonsense", () => {
     expect(() => applyDefaults({ ...base, budgetCents: 0 }, opts)).toThrow();
     expect(() => applyDefaults({ ...base, hardLimitCents: 100 }, opts)).toThrow(/below the budget/);

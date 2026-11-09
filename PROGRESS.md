@@ -28,6 +28,18 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Tests: 49 pass (`npm test`). Engine table tests, defaults/read-back, and DB integration tests with a fake PayPal: full story, approve, unclear = reject, expiry, kill switch, version bump, **parallel race can't beat the hard limit**, refund frees budget, the DB CHECKs.
   - Terminal: `npm run cli -- story` runs the video story on the real sandbox (see below).
 
+- [x] **Code review fixes** (Nov 10, all 10 findings verified and fixed, 13 regression tests, 62 total):
+  - A capture PayPal confirmed is never marked FAILED: the capture call retries once with the same request id, then the DB write retries; worst case the capture id is logged for a manual refund.
+  - Abandoned no-vault popups release after 10 minutes (and at once via `cancelFallbackPurchase`); a vault authorization stuck RESERVED releases after 2 minutes.
+  - Failed voids stay AUTHORIZED/HELD with `void failed:` and the 60-second sweep (`sweepExpiredApprovals`, wired in `src/instrumentation.ts`) retries them, along with HELD purchases whose approval is closed.
+  - An authorization PayPal creates as anything but CREATED is voided, never captured.
+  - Idempotency key conflicts are resolved inside the transaction; parallel retries make one purchase.
+  - An allowed-category list that's entirely blocked is refused; an empty list now means "nothing allowed", never "anything".
+  - Events (and the approval token) reach live listeners only after their transaction commits (`inTransaction` in `events/bus.ts`).
+  - Both re-checks (auto-approve and human approve) run the full policy engine with the mandate row locked.
+  - AGENTS.md now scopes the PayPal-writes rule to app code; `scripts/paypal-spike.ts` is the labelled exception.
+  - Known small window: a freeze landing between the auto-approve re-check and the capture call can still capture that one purchase.
+
 ## Next up
 
 1. Decide how the video shows the attack: Haiku ignores the poisoned page, so the "agent tries gift cards" beat needs the scripted path (`npm run cli -- story`, later `/api/demo/script`).

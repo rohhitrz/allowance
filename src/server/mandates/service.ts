@@ -6,7 +6,7 @@ import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { db, type Conn } from "../db";
 import { approvals, mandates, mandateVersions, purchases, type MandateRow } from "../db/schema";
 import { AppError, assertHuman } from "../errors";
-import { recordEvent } from "../events/bus";
+import { inTransaction, recordEvent } from "../events/bus";
 import { id } from "../ids";
 import { usd } from "../money";
 import { voidPurchase } from "../transactions/service";
@@ -60,7 +60,7 @@ export async function createDraft(args: {
   } catch (e) {
     throw new AppError("PARSE_FAILED", e instanceof Error ? e.message : String(e), { draft: args.draft });
   }
-  const m = await db().transaction(async (tx) => {
+  const m = await inTransaction(async (tx) => {
     const [m] = await tx
       .insert(mandates)
       .values({
@@ -85,7 +85,7 @@ export async function createDraft(args: {
 
 export async function confirmMandate(mandateId: string, actor: string) {
   assertHuman(actor);
-  return db().transaction(async (tx) => {
+  return inTransaction(async (tx) => {
     const m = await load(tx, mandateId, true);
     if (m.status !== "DRAFT") throw new AppError("INVALID_STATE", `Mandate is ${m.status}`);
     const now = new Date();
@@ -103,7 +103,7 @@ export async function confirmMandate(mandateId: string, actor: string) {
 /** FROZEN -> ACTIVE with version + 1, so approvals issued before the freeze stay dead. */
 export async function unfreezeMandate(mandateId: string, actor: string) {
   assertHuman(actor);
-  return db().transaction(async (tx) => {
+  return inTransaction(async (tx) => {
     const m = await load(tx, mandateId, true);
     if (m.status !== "FROZEN") throw new AppError("INVALID_STATE", `Mandate is ${m.status}`);
     const [row] = await tx
@@ -119,7 +119,7 @@ export async function unfreezeMandate(mandateId: string, actor: string) {
 
 export async function cancelMandate(mandateId: string, actor: string) {
   assertHuman(actor);
-  const { row, held } = await db().transaction(async (tx) => {
+  const { row, held } = await inTransaction(async (tx) => {
     const m = await load(tx, mandateId, true);
     if (m.status === "CANCELLED" || m.status === "EXPIRED") throw new AppError("INVALID_STATE", `Mandate is ${m.status}`);
     const [row] = await tx

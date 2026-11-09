@@ -1,20 +1,24 @@
 /**
  * Transaction service: owns the purchase state machine.
- * This is the ONLY module that calls PayPal write APIs (authorize, capture, void, refund).
+ * This is the ONLY app module that calls PayPal write APIs (authorize, capture, void, refund).
  *
  * Order of operations (docs/02-system-design.md §4.2):
  *   1. lock mandate row, compute spend, run the policy engine, insert the purchase  (one DB transaction)
  *   2. BLOCK  -> done. PayPal is never called.
  *   3. otherwise authorize on PayPal, then
- *        APPROVE -> re-check mandate -> capture
+ *        APPROVE -> re-check (full engine, mandate locked) -> capture
  *        HOLD    -> create approval; a human decides later
  * Every status change is compare-and-set: UPDATE ... WHERE status IN (expected).
+ *
+ * PayPal is the source of truth for money. Two rules follow from that:
+ *   - once PayPal confirms a capture, the purchase is never marked FAILED; we keep retrying the DB write
+ *   - a void that fails leaves the purchase AUTHORIZED/HELD with "void failed: ..." and reconcile() retries it
  */
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
 import { db, type Conn } from "../db";
 import { agentRuns, approvals, mandates, paypalVaults, products, purchases, type PurchaseRow } from "../db/schema";
 import { AppError, assertHuman } from "../errors";
-import { bus, recordEvent } from "../events/bus";
+import { bus, inTransaction, recordEvent } from "../events/bus";
 import { id, newToken, sha256 } from "../ids";
 import { evaluate, failedRules } from "../policy/engine";
 import type { PolicyOutput } from "../policy/types";
@@ -25,6 +29,12 @@ import { PayPalError } from "../paypal/client";
 import { gateway } from "./gateway";
 
 const APPROVAL_TTL_MS = 10 * 60_000;
+/** A no-vault purchase waiting for the buyer's PayPal popup is released after this. */
+const POPUP_TTL_MS = 10 * 60_000;
+/** A vault authorization still RESERVED after this means the process died mid-call. */
+const STUCK_RESERVATION_MS = 2 * 60_000;
+const VOID_FAILED = "void failed:";
+
 type Status = PurchaseRow["status"];
 
 export type PublicApproval = { id: string; prompt: string; expiresAt: Date; status: string };
@@ -59,6 +69,20 @@ function paypalFailure(e: unknown) {
   return { reason: e instanceof Error ? e.message : String(e), debugId: null };
 }
 
+/** Retry a DB write a few times; used after PayPal has already moved money. */
+async function persistently<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 200 * 2 ** i));
+    }
+  }
+  throw last;
+}
+
 async function publicApproval(purchaseId: string): Promise<PublicApproval | undefined> {
   const [a] = await db().select().from(approvals).where(eq(approvals.purchaseId, purchaseId));
   return a ? { id: a.id, prompt: a.prompt, expiresAt: a.expiresAt, status: a.status } : undefined;
@@ -67,6 +91,27 @@ async function publicApproval(purchaseId: string): Promise<PublicApproval | unde
 async function result(purchaseId: string): Promise<PurchaseResult> {
   const purchase = await loadPurchase(db(), purchaseId);
   return { purchase, approval: await publicApproval(purchaseId) };
+}
+
+/**
+ * Re-run the full policy engine against the mandate as it is NOW, with the mandate row
+ * locked and this purchase excluded from spend. Soft rules are ignored (approve path
+ * already accepted them); hard rules and the mandate version must still hold.
+ */
+async function recheck(conn: Conn, p: PurchaseRow, expectedVersion: number, now: Date) {
+  const [m] = await conn.select().from(mandates).where(eq(mandates.id, p.mandateId)).for("update");
+  const { spend } = await getSpend(conn, m, now, p.id);
+  const out = evaluate({
+    mandate: toPolicyMandate(m),
+    spend,
+    request: { productId: p.productId, quantity: p.quantity },
+    product: { priceCents: p.unitPriceCents, category: p.productCategory },
+    now,
+  });
+  const hardFailed = failedRules(out.results, "hard");
+  const versionChanged = m.version !== expectedVersion;
+  const problem = versionChanged ? "mandate changed since the check" : hardFailed.map((r) => r.detail).join("; ") || null;
+  return { ok: problem === null, problem, results: out.results, versionChanged };
 }
 
 // ---------- request a purchase (the one money entry point) ----------
@@ -84,14 +129,17 @@ export async function requestPurchase(args: {
   if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > 1000) {
     throw new AppError("VALIDATION_ERROR", "quantity must be a whole number from 1 to 1000");
   }
-  if (args.idempotencyKey) {
+  const existingByKey = async () => {
+    if (!args.idempotencyKey) return null;
     const [existing] = await db().select().from(purchases).where(eq(purchases.idempotencyKey, args.idempotencyKey));
-    if (existing) return result(existing.id);
-  }
+    return existing ? result(existing.id) : null;
+  };
+  const fast = await existingByKey();
+  if (fast) return fast;
   const now = args.now ?? new Date();
 
   // 1. Decide and reserve atomically. The row lock serialises parallel requests on one mandate.
-  const created = await db().transaction(async (tx) => {
+  const created = await inTransaction(async (tx) => {
     const [m] = await tx.select().from(mandates).where(eq(mandates.id, args.mandateId)).for("update");
     if (!m) throw new AppError("NOT_FOUND", `Unknown mandate ${args.mandateId}`);
     // Price and category come from our catalog, never from the caller.
@@ -108,6 +156,7 @@ export async function requestPurchase(args: {
     });
 
     const pid = id("pur");
+    // A concurrent retry with the same idempotency key loses here, inside the transaction.
     const [row] = await tx
       .insert(purchases)
       .values({
@@ -129,7 +178,9 @@ export async function requestPurchase(args: {
         ruleResults: out.results,
         status: out.decision === "BLOCK" ? "BLOCKED" : "RESERVED",
       })
+      .onConflictDoNothing({ target: purchases.idempotencyKey })
       .returning();
+    if (!row) return null;
 
     const base = { actor: args.actor, mandateId: m.id, purchaseId: pid };
     await recordEvent(tx, {
@@ -149,14 +200,19 @@ export async function requestPurchase(args: {
     return { row, out, spentBefore: spend.amountCents, mandate: m };
   });
 
+  if (!created) {
+    const dup = await existingByKey();
+    if (dup) return dup;
+    throw new AppError("INVALID_STATE", "Duplicate idempotency key");
+  }
   if (created.row.status === "BLOCKED") return result(created.row.id);
 
   // 2. Authorize on PayPal (outside the DB transaction; the reservation already counts toward spend).
-  await authorize(created.row, created.mandate.userId);
-  const after = await loadPurchase(db(), created.row.id);
-  if (after.status !== "AUTHORIZED") return result(after.id); // FAILED, or RESERVED awaiting buyer popup (fallback)
+  const outcome = await authorize(created.row, created.mandate.userId);
+  if (outcome !== "authorized") return result(created.row.id); // FAILED / VOIDED, or waiting for the buyer popup
 
   // 3. Approve -> capture; Hold -> ask a human.
+  const after = await loadPurchase(db(), created.row.id);
   if (created.out.decision === "APPROVE") {
     await captureAfterRecheck(after, "system");
   } else {
@@ -165,7 +221,9 @@ export async function requestPurchase(args: {
   return result(after.id);
 }
 
-async function authorize(p: PurchaseRow, userId: string) {
+type AuthorizeOutcome = "authorized" | "awaiting_buyer" | "failed" | "voided";
+
+async function authorize(p: PurchaseRow, userId: string): Promise<AuthorizeOutcome> {
   const [vault] = await db()
     .select()
     .from(paypalVaults)
@@ -173,11 +231,13 @@ async function authorize(p: PurchaseRow, userId: string) {
   // Mark first, so a crash mid-call can never leave a "PayPal never called" claim that isn't true.
   await db().update(purchases).set({ paypalCalled: true }).where(eq(purchases.id, p.id));
 
+  let r;
   try {
     if (!vault?.paymentTokenId) {
       // No-vault fallback: the buyer approves in a popup, then completeFallbackAuthorization() runs.
+      // If they never do, reconcile() releases the reservation after POPUP_TTL_MS.
       const base = process.env.APP_BASE_URL ?? "http://localhost:3000";
-      const r = await gateway().createOrderForApproval({
+      const o = await gateway().createOrderForApproval({
         amountCents: p.totalCents,
         description: p.productName,
         customId: p.id,
@@ -187,45 +247,65 @@ async function authorize(p: PurchaseRow, userId: string) {
       });
       await db()
         .update(purchases)
-        .set({ paypalOrderId: r.orderId, paypalApproveUrl: r.approveUrl ?? null, updatedAt: new Date() })
+        .set({ paypalOrderId: o.orderId, paypalApproveUrl: o.approveUrl ?? null, updatedAt: new Date() })
         .where(eq(purchases.id, p.id));
-      return;
+      return "awaiting_buyer";
     }
-    const r = await gateway().authorizeWithVault({
+    r = await gateway().authorizeWithVault({
       amountCents: p.totalCents,
       vaultId: vault.paymentTokenId,
       description: p.productName,
       customId: p.id,
       requestId: `${p.id}:authorize`,
     });
-    if (!r.authorizationId || r.authorizationStatus !== "CREATED") {
-      throw new Error(`Authorization not created (order ${r.orderStatus}, auth ${r.authorizationStatus ?? "none"})`);
-    }
-    await markAuthorized(p, r.orderId, r.authorizationId);
   } catch (e) {
     await fail(p, e);
+    return "failed";
   }
+  if (!r.authorizationId) {
+    await fail(p, new Error(`No authorization returned (order ${r.orderStatus})`));
+    return "failed";
+  }
+  if (!(await markAuthorized(p, r.orderId, r.authorizationId))) return "failed";
+  if (r.authorizationStatus !== "CREATED") {
+    // PayPal made an authorization we can't use (e.g. PENDING review, DENIED). Release it.
+    const v = await voidPurchase(p.id, "system", `PayPal authorization was ${r.authorizationStatus ?? "unknown"}`).catch(
+      () => null, // recorded as "void failed"; reconcile() retries
+    );
+    return v?.status === "VOIDED" ? "voided" : "failed";
+  }
+  return "authorized";
 }
 
-async function markAuthorized(p: PurchaseRow, orderId: string, authorizationId: string) {
+/** RESERVED -> AUTHORIZED. If the reservation was already released, void the stray authorization. */
+async function markAuthorized(p: PurchaseRow, orderId: string, authorizationId: string): Promise<boolean> {
   const row = await transition(db(), p.id, ["RESERVED"], "AUTHORIZED", {
     paypalOrderId: orderId,
     paypalAuthorizationId: authorizationId,
   });
-  if (row) {
-    await recordEvent(db(), {
-      actor: "system",
-      type: "purchase.authorized",
-      mandateId: p.mandateId,
-      purchaseId: p.id,
-      data: { orderId, authorizationId },
-    });
+  if (!row) {
+    await gateway()
+      .voidAuthorization({ authorizationId, requestId: `${p.id}:void` })
+      .catch(() => {});
+    await db()
+      .update(purchases)
+      .set({ paypalOrderId: orderId, paypalAuthorizationId: authorizationId })
+      .where(eq(purchases.id, p.id));
+    return false;
   }
+  await recordEvent(db(), {
+    actor: "system",
+    type: "purchase.authorized",
+    mandateId: p.mandateId,
+    purchaseId: p.id,
+    data: { orderId, authorizationId },
+  });
+  return true;
 }
 
-async function fail(p: PurchaseRow, e: unknown) {
+async function fail(p: PurchaseRow, e: unknown, from: Status[] = ["RESERVED", "AUTHORIZED", "HELD"]) {
   const f = paypalFailure(e);
-  const row = await transition(db(), p.id, ["RESERVED", "AUTHORIZED", "HELD"], "FAILED", {
+  const row = await transition(db(), p.id, from, "FAILED", {
     failureReason: f.reason,
     paypalDebugId: f.debugId,
   });
@@ -245,12 +325,17 @@ export async function completeFallbackAuthorization(purchaseId: string, actor: s
   assertHuman(actor);
   const p = await loadPurchase(db(), purchaseId);
   if (p.status !== "RESERVED" || !p.paypalOrderId) throw new AppError("INVALID_STATE", `Purchase is ${p.status}`);
+  let r;
   try {
-    const r = await gateway().authorizeOrder({ orderId: p.paypalOrderId, requestId: `${p.id}:authorize` });
+    r = await gateway().authorizeOrder({ orderId: p.paypalOrderId, requestId: `${p.id}:authorize` });
     if (!r.authorizationId) throw new Error("No authorization returned");
-    await markAuthorized(p, p.paypalOrderId, r.authorizationId);
   } catch (e) {
-    await fail(p, e);
+    await fail(p, e, ["RESERVED"]);
+    return result(p.id);
+  }
+  if (!(await markAuthorized(p, p.paypalOrderId, r.authorizationId))) return result(p.id);
+  if (r.authorizationStatus && r.authorizationStatus !== "CREATED") {
+    await voidPurchase(p.id, "system", `PayPal authorization was ${r.authorizationStatus}`).catch(() => {});
     return result(p.id);
   }
   const after = await loadPurchase(db(), p.id);
@@ -264,21 +349,23 @@ export async function completeFallbackAuthorization(purchaseId: string, actor: s
   return result(p.id);
 }
 
+/** No-vault fallback: the buyer closed or cancelled the PayPal popup. Releases the reservation. */
+export async function cancelFallbackPurchase(purchaseId: string, actor: string): Promise<PurchaseRow> {
+  const p = await loadPurchase(db(), purchaseId);
+  if (p.status !== "RESERVED" || !p.paypalApproveUrl) return p;
+  const row = await transition(db(), p.id, ["RESERVED"], "FAILED", { failureReason: "buyer cancelled in PayPal" });
+  if (row) {
+    await recordEvent(db(), { actor, type: "purchase.failed", mandateId: p.mandateId, purchaseId: p.id, data: { reason: row.failureReason } });
+  }
+  return row ?? (await loadPurchase(db(), p.id));
+}
+
 // ---------- capture / void / refund ----------
 
-/** Final re-check before capture on the auto-approve path: mandate still ACTIVE, same version, not expired. */
+/** Final re-check before capture on the auto-approve path (full engine, mandate locked). */
 async function captureAfterRecheck(p: PurchaseRow, actor: string) {
-  const [m] = await db().select().from(mandates).where(eq(mandates.id, p.mandateId));
-  const now = new Date();
-  const problem =
-    m.status !== "ACTIVE"
-      ? `mandate is ${m.status}`
-      : m.version !== p.mandateVersion
-        ? "mandate changed since the check"
-        : m.expiresAt && now > m.expiresAt
-          ? "mandate expired"
-          : null;
-  if (problem) return voidPurchase(p.id, actor, `re-check failed: ${problem}`);
+  const check = await inTransaction((tx) => recheck(tx, p, p.mandateVersion, new Date()));
+  if (!check.ok) return voidPurchase(p.id, actor, `re-check failed: ${check.problem}`).catch(() => null);
   return capture(p.id, actor);
 }
 
@@ -287,31 +374,67 @@ async function capture(purchaseId: string, actor: string) {
   if (!["AUTHORIZED", "HELD"].includes(p.status) || !p.paypalAuthorizationId) {
     throw new AppError("INVALID_STATE", `Can't capture a ${p.status} purchase`);
   }
+  const authorizationId = p.paypalAuthorizationId;
+
+  // Step 1: ask PayPal. Retry once with the same request id: if the first call actually
+  // captured but the response was lost, PayPal returns that same capture.
+  let r: { captureId: string; status: string };
   try {
-    const r = await gateway().captureAuthorization({
-      authorizationId: p.paypalAuthorizationId,
-      requestId: `${p.id}:capture`,
-    });
-    const row = await transition(db(), p.id, ["AUTHORIZED", "HELD"], "CAPTURED", { paypalCaptureId: r.captureId });
-    if (row) {
-      await recordEvent(db(), {
-        actor,
-        type: "purchase.captured",
-        mandateId: p.mandateId,
-        purchaseId: p.id,
-        data: { captureId: r.captureId, captureStatus: r.status },
-      });
-    }
+    r = await gateway()
+      .captureAuthorization({ authorizationId, requestId: `${p.id}:capture` })
+      .catch(() => gateway().captureAuthorization({ authorizationId, requestId: `${p.id}:capture` }));
   } catch (e) {
-    // Don't leave money authorized after a failed capture.
-    await gateway()
-      .voidAuthorization({ authorizationId: p.paypalAuthorizationId, requestId: `${p.id}:void` })
-      .catch(() => {});
-    await fail(p, e);
+    // PayPal refused the capture. Don't leave money authorized: void, then mark FAILED.
+    const f = paypalFailure(e);
+    try {
+      await gateway().voidAuthorization({ authorizationId, requestId: `${p.id}:void` });
+    } catch (ve) {
+      // Can't release it now; keep it open and let reconcile() retry the void.
+      await db()
+        .update(purchases)
+        .set({ failureReason: `${VOID_FAILED} capture failed (${f.reason}); ${paypalFailure(ve).reason}`, paypalDebugId: f.debugId })
+        .where(eq(purchases.id, p.id));
+      return;
+    }
+    await fail(p, e, ["AUTHORIZED", "HELD"]);
+    return;
   }
+
+  // Step 2: money has moved. Record it, whatever it takes. Never mark this purchase FAILED.
+  await persistently(async () => {
+    const row = await transition(db(), p.id, ["AUTHORIZED", "HELD"], "CAPTURED", {
+      paypalCaptureId: r.captureId,
+      failureReason: null,
+    });
+    if (!row) {
+      // Someone moved the row meanwhile, but PayPal is the truth: it's captured.
+      await db()
+        .update(purchases)
+        .set({ status: "CAPTURED", paypalCaptureId: r.captureId, updatedAt: new Date() })
+        .where(eq(purchases.id, p.id));
+    }
+    await recordEvent(db(), {
+      actor,
+      type: "purchase.captured",
+      mandateId: p.mandateId,
+      purchaseId: p.id,
+      data: { captureId: r.captureId, captureStatus: r.status },
+    });
+  }).catch((e) => {
+    // Last resort: the capture id is in the log so it can be refunded by hand.
+    console.error(`[allowance] CAPTURED ${p.id} on PayPal (capture ${r.captureId}) but the DB write failed`, e);
+    throw new AppError("INVALID_STATE", `Captured on PayPal (${r.captureId}) but not recorded; retry`, {
+      purchaseId: p.id,
+      captureId: r.captureId,
+    });
+  });
 }
 
-/** Void an open authorization (reject, expiry, re-check failed, kill switch). */
+/**
+ * Void an open authorization (reject, expiry, re-check failed, kill switch).
+ * On a PayPal error the purchase stays AUTHORIZED/HELD with "void failed: ..." and
+ * reconcile() retries it; the error is rethrown so callers can report it.
+ */
 export async function voidPurchase(purchaseId: string, actor: string, reason: string) {
   const p = await loadPurchase(db(), purchaseId);
   if (!["AUTHORIZED", "HELD"].includes(p.status)) return p;
@@ -324,7 +447,7 @@ export async function voidPurchase(purchaseId: string, actor: string, reason: st
     const f = paypalFailure(e);
     await db()
       .update(purchases)
-      .set({ failureReason: `void failed: ${f.reason}`, paypalDebugId: f.debugId })
+      .set({ failureReason: `${VOID_FAILED} ${reason}; ${f.reason}`, paypalDebugId: f.debugId })
       .where(eq(purchases.id, p.id));
     throw new AppError("PAYPAL_ERROR", `Void failed: ${f.reason}`, { paypalDebugId: f.debugId });
   }
@@ -352,14 +475,15 @@ export async function refundPurchase(purchaseId: string, actor: string, reason?:
     const f = paypalFailure(e);
     throw new AppError("PAYPAL_ERROR", `Refund failed: ${f.reason}`, { paypalDebugId: f.debugId });
   }
-  const row = await transition(db(), p.id, ["CAPTURED"], "REFUNDED", { paypalRefundId: refund.refundId });
+  const refundId = refund.refundId;
+  const row = await persistently(() => transition(db(), p.id, ["CAPTURED"], "REFUNDED", { paypalRefundId: refundId }));
   if (row) {
     await recordEvent(db(), {
       actor,
       type: "purchase.refunded",
       mandateId: p.mandateId,
       purchaseId: p.id,
-      data: { refundId: refund.refundId, reason: reason ?? null },
+      data: { refundId, reason: reason ?? null },
     });
   }
   return row ?? (await loadPurchase(db(), p.id));
@@ -386,9 +510,9 @@ async function createHold(
   });
   const approvalId = id("apr");
   const expiresAt = new Date(Date.now() + APPROVAL_TTL_MS);
-  await db().transaction(async (tx) => {
+  await inTransaction(async (tx, afterCommit) => {
     const row = await transition(tx, p.id, ["AUTHORIZED"], "HELD");
-    if (!row) return; // moved by someone else (e.g. kill switch)
+    if (!row) return; // moved by someone else (e.g. kill switch): no hold, no token
     await tx.insert(approvals).values({
       id: approvalId,
       purchaseId: p.id,
@@ -407,9 +531,10 @@ async function createHold(
       purchaseId: p.id,
       data: { approvalId, prompt, expiresAt: expiresAt.toISOString() },
     });
+    // The raw token goes only to human channels (SSE / voice), never to the DB or the agent,
+    // and only once the hold is committed.
+    afterCommit(() => bus.emit("approval.token", { approvalId, purchaseId: p.id, token }));
   });
-  // The raw token goes only to human channels (SSE / voice), never to the DB or the agent.
-  bus.emit("approval.token", { approvalId, purchaseId: p.id, token });
 }
 
 export type DecisionOutcome = { approval: PublicApproval; purchase: PurchaseRow; alreadyDecided: boolean; note?: string };
@@ -430,7 +555,7 @@ export async function decideApproval(args: {
   const now = args.now ?? new Date();
   const approve = args.decision === "approve";
 
-  const plan = await db().transaction(async (tx) => {
+  const plan = await inTransaction(async (tx) => {
     const where = args.approvalId
       ? eq(approvals.id, args.approvalId)
       : args.token
@@ -456,30 +581,16 @@ export async function decideApproval(args: {
       return { kind: "void" as const, a, reason: "rejected by user" };
     }
 
-    // Approve: re-check hard rules against the mandate as it is now.
-    const [m] = await tx.select().from(mandates).where(eq(mandates.id, p.mandateId)).for("update");
-    const { spend } = await getSpend(tx, m, now, p.id);
-    const recheck = evaluate({
-      mandate: toPolicyMandate(m),
-      spend,
-      request: { productId: p.productId, quantity: p.quantity },
-      product: { priceCents: p.unitPriceCents, category: p.productCategory },
-      now,
-    });
-    const hardFailed = failedRules(recheck.results, "hard");
-    const versionChanged = m.version !== a.mandateVersion;
+    const check = await recheck(tx, p, a.mandateVersion, now);
     await decided("APPROVED", args.actor);
     await recordEvent(tx, {
       actor: args.actor,
       type: "approval.decided",
       mandateId: p.mandateId,
       purchaseId: p.id,
-      data: { approvalId: a.id, decision: "approve", recheck: recheck.results, versionChanged },
+      data: { approvalId: a.id, decision: "approve", recheck: check.results, versionChanged: check.versionChanged },
     });
-    if (versionChanged || hardFailed.length) {
-      const why = versionChanged ? "mandate changed since the hold" : hardFailed.map((r) => r.detail).join("; ");
-      return { kind: "void" as const, a, reason: `re-check failed: ${why}` };
-    }
+    if (!check.ok) return { kind: "void" as const, a, reason: `re-check failed: ${check.problem}` };
     return { kind: "capture" as const, a };
   });
 
@@ -487,7 +598,8 @@ export async function decideApproval(args: {
   if (plan.kind === "capture") await capture(plan.a.purchaseId, args.actor);
   if (plan.kind === "void") {
     note = plan.reason;
-    await voidPurchase(plan.a.purchaseId, plan.reason === "approval expired" ? "system" : args.actor, plan.reason);
+    // A failed void is kept open and retried by reconcile(); the decision itself stands.
+    await voidPurchase(plan.a.purchaseId, plan.reason === "approval expired" ? "system" : args.actor, plan.reason).catch(() => {});
   }
   const [a] = await db().select().from(approvals).where(eq(approvals.id, plan.a.id));
   return {
@@ -498,7 +610,7 @@ export async function decideApproval(args: {
   };
 }
 
-/** Expire stale approvals and void them. Run every 60 s, and on read. */
+/** Expire stale approvals and void them. Also runs the rest of reconcile(). */
 export async function sweepExpiredApprovals(now = new Date()): Promise<number> {
   const expired = await db()
     .update(approvals)
@@ -508,21 +620,93 @@ export async function sweepExpiredApprovals(now = new Date()): Promise<number> {
   for (const e of expired) {
     const p = await loadPurchase(db(), e.purchaseId);
     await recordEvent(db(), { actor: "system", type: "approval.expired", mandateId: p.mandateId, purchaseId: p.id, data: { approvalId: e.id } });
-    await voidPurchase(p.id, "system", "approval expired").catch(() => {});
+    await voidPurchase(p.id, "system", "approval expired").catch(() => {}); // retried by retryOpenVoids
   }
+  await retryOpenVoids();
+  await releaseStaleReservations(now);
   return expired.length;
 }
+
+const CLOSED_APPROVAL_REASON: Record<string, string> = {
+  REJECTED: "rejected by user",
+  EXPIRED: "approval expired",
+  CANCELLED: "kill switch or mandate cancelled",
+};
+
+/**
+ * Retry every void that should have happened but didn't: purchases still HELD whose approval
+ * is closed, and anything marked "void failed". Returns how many are now voided.
+ */
+export async function retryOpenVoids(): Promise<number> {
+  const rows = await db()
+    .select({ purchase: purchases, approvalStatus: approvals.status })
+    .from(purchases)
+    .leftJoin(approvals, eq(approvals.purchaseId, purchases.id))
+    .where(
+      and(
+        inArray(purchases.status, ["AUTHORIZED", "HELD"]),
+        or(
+          like(purchases.failureReason, `${VOID_FAILED}%`),
+          and(eq(purchases.status, "HELD"), inArray(approvals.status, ["REJECTED", "EXPIRED", "CANCELLED"])),
+        ),
+      ),
+    );
+  let voided = 0;
+  for (const { purchase: p, approvalStatus } of rows) {
+    const reason = (approvalStatus && CLOSED_APPROVAL_REASON[approvalStatus]) ?? "void retry";
+    const after = await voidPurchase(p.id, "system", reason).catch(() => null);
+    if (after?.status === "VOIDED") voided++;
+  }
+  return voided;
+}
+
+/**
+ * Release reservations nobody will finish: a no-vault order the buyer never approved
+ * (POPUP_TTL_MS), or a vault authorization interrupted mid-call (STUCK_RESERVATION_MS).
+ * FAILED no longer counts toward spend, orders or duplicates.
+ */
+export async function releaseStaleReservations(now = new Date()): Promise<number> {
+  const popupCutoff = new Date(now.getTime() - POPUP_TTL_MS);
+  const stuckCutoff = new Date(now.getTime() - STUCK_RESERVATION_MS);
+  const rows = await db()
+    .update(purchases)
+    .set({
+      status: "FAILED",
+      updatedAt: now,
+      failureReason: sql`CASE WHEN ${purchases.paypalApproveUrl} IS NOT NULL
+        THEN 'buyer did not approve in PayPal in time'
+        ELSE 'authorization never completed' END`,
+    })
+    .where(
+      and(
+        eq(purchases.status, "RESERVED"),
+        or(
+          and(isNotNull(purchases.paypalApproveUrl), lt(purchases.updatedAt, popupCutoff)),
+          and(isNull(purchases.paypalApproveUrl), lt(purchases.updatedAt, stuckCutoff)),
+        ),
+      ),
+    )
+    .returning();
+  for (const p of rows) {
+    await recordEvent(db(), { actor: "system", type: "purchase.failed", mandateId: p.mandateId, purchaseId: p.id, data: { reason: p.failureReason } });
+  }
+  return rows.length;
+}
+
+/** Everything the 60-second sweep does (src/instrumentation.ts calls sweepExpiredApprovals). */
+export const reconcile = (now = new Date()) => sweepExpiredApprovals(now);
 
 // ---------- kill switch ----------
 
 /**
  * Freeze every ACTIVE mandate, cancel pending approvals and stop agent runs in one
  * transaction; then void the open holds on PayPal. Freezing is always the safe
- * direction, so any actor (including MCP agents) may call it.
+ * direction, so any actor (including MCP agents) may call it. A void that fails here
+ * is retried by reconcile().
  */
 export async function freezeAll(args: { actor: string; userId: string }): Promise<{ frozen: number; voided: number }> {
   const now = new Date();
-  const { frozenIds, purchaseIds } = await db().transaction(async (tx) => {
+  const { frozenIds, purchaseIds } = await inTransaction(async (tx) => {
     const frozen = await tx
       .update(mandates)
       .set({ status: "FROZEN", frozenAt: now, updatedAt: now })
@@ -554,12 +738,8 @@ export async function freezeAll(args: { actor: string; userId: string }): Promis
 
   let voided = 0;
   for (const pid of purchaseIds) {
-    try {
-      const p = await voidPurchase(pid, args.actor, "kill switch");
-      if (p.status === "VOIDED") voided++;
-    } catch {
-      // Recorded on the purchase as failure_reason; the mandate is frozen regardless.
-    }
+    const p = await voidPurchase(pid, args.actor, "kill switch").catch(() => null);
+    if (p?.status === "VOIDED") voided++;
   }
   return { frozen: frozenIds.length, voided };
 }
@@ -574,3 +754,4 @@ export async function pendingApprovals() {
     .where(eq(approvals.status, "PENDING"))
     .orderBy(sql`${approvals.createdAt} DESC`);
 }
+
