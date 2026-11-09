@@ -38,7 +38,9 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - Agents propose, code decides: the policy engine has no LLM; hard-rule breaks never reach PayPal.
 - USD only, amounts in integer cents.
 - Sponsor prize target: AG Grid (receipts ledger).
-- Spike result: _not run yet_
+- Spike result (in progress, Nov 10): OAuth works. Vault setup returned 403 NOT_AUTHORIZED (token had no vault v3 scope), and buyer checkout said "seller doesn't accept payments in your currency". Cause: the default sandbox accounts are **India** accounts. Fix: use a **US** sandbox business account (new app linked to it, "Save payment methods" ticked) and a **US** sandbox personal buyer.
+  - With the US app ("Allowance US"): buyer-approved order → **authorize ✓ → capture ✓ ($89.99 COMPLETED) → refund ✓ (COMPLETED)**. So the popup fallback path is proven.
+  - Still open: Vault setup token still 403 on the US app (needs "Save payment methods" ticked + saved on that app), and void not yet tested.
 
 ## Open questions
 
