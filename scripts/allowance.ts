@@ -167,12 +167,20 @@ async function parse(text: string | undefined) {
 async function agentRun(text: string | undefined) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("Set ANTHROPIC_API_KEY in .env for the live agent");
   await reset();
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // ANSWERS="y,reject,approve" scripts the prompts (rehearsals, CI); otherwise ask on the terminal.
+  const scripted = process.env.ANSWERS?.split(",").map((a) => a.trim());
+  const rl = scripted ? null : createInterface({ input: process.stdin, output: process.stdout });
+  const ask = async (q: string) => {
+    if (!scripted) return rl!.question(q);
+    const a = scripted.shift() ?? "reject";
+    console.log(`${q}${c.cyan(a)}`);
+    return a;
+  };
   try {
     beat("Mandate");
     const res = await draftMandateFromText({ text: text ?? GIFT_TEXT, actor: "user:voice" });
     console.log(`  Read-back: ${res.summary}`);
-    const ok = (await rl.question("  Confirm? [y/N] ")).trim().toLowerCase();
+    const ok = (await ask("  Confirm? [y/N] ")).trim().toLowerCase();
     if (ok !== "y" && ok !== "yes") return console.log("  Cancelled.");
     const m = await confirmMandate(res.mandate.id, "user:voice");
 
@@ -184,7 +192,7 @@ async function agentRun(text: string | undefined) {
       },
       onHold: async (r: PurchaseResult) => {
         console.log(`  ${c.yellow("Voice:")} ${r.approval?.prompt}`);
-        const answer = (await rl.question(`  ${c.bold("approve / reject?")} `)).trim().toLowerCase();
+        const answer = (await ask(`  ${c.bold("approve / reject?")} `)).trim().toLowerCase();
         await decideApproval({ approvalId: r.approval!.id, decision: answer === "approve" ? "approve" : "reject", actor: "user:voice" });
       },
     };
@@ -206,7 +214,7 @@ async function agentRun(text: string | undefined) {
     beat("Ledger");
     await ledger();
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 

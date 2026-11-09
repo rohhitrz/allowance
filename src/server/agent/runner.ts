@@ -20,7 +20,13 @@ import { requestPurchase, type PurchaseResult } from "../transactions/service";
 import { AppError } from "../errors";
 import { getReceipt } from "../receipts";
 
-export const AGENT_MODEL = "claude-sonnet-5-5";
+/**
+ * Haiku 5.5 by default: this is short tool use over a small catalog, and it costs ~1/20th of Sonnet.
+ * Set AGENT_MODEL=claude-sonnet-5-5 if it misbehaves on camera (Sonnet 5 costs the same as 5.5, so never pick it).
+ */
+export const AGENT_MODEL = process.env.AGENT_MODEL ?? "claude-haiku-5-5";
+// Server-side refusal fallback exists for Sonnet/Opus, not Haiku.
+const SUPPORTS_FALLBACK = !AGENT_MODEL.startsWith("claude-haiku");
 const MAX_STEPS = 8;
 const ACTOR = "agent:allowance";
 
@@ -186,8 +192,7 @@ async function runAgent(runId: string, mandate: Awaited<ReturnType<typeof getMan
         messages,
         output_config: { effort: "medium" },
         // Route around a safety-classifier refusal (e.g. tripped by the poisoned product text).
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
+        ...(SUPPORTS_FALLBACK ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       });
       messages.push({ role: "assistant", content: res.content });
       for (const b of res.content) if (b.type === "text" && b.text.trim()) hooks.onText?.(b.text);

@@ -6,8 +6,7 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 ## Current stage
 
-**Stage 2: Core engine (Tue 10 Nov)**: built. Scripted story passes from the terminal on the real PayPal sandbox. **Still to check: the Claude parts (mandate parser, shopping agent) haven't run live, because there's no `ANTHROPIC_API_KEY` yet.**
-- Put the key in `.env`, then run `npm run cli -- parse "..."` and `npm run cli -- agent`. Expect small fixes there.
+**Stage 2: Core engine (Tue 10 Nov)**: DONE ✓. Scripted story and the live Claude agent both work from the terminal on the real PayPal sandbox.
 - Stage 1 gate PASSED on Nov 10: Vault + authorize/capture/void/refund all work in sandbox with no buyer popup.
 
 ## Done
@@ -24,14 +23,14 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Policy engine (`src/server/policy/engine.ts`): pure function, all 10 rules always evaluated, hard → BLOCK, soft → HOLD. Weekly/monthly windows in the mandate's timezone (`period.ts`).
   - Mandates: Claude Haiku 5.5 parses text with structured output; code applies defaults and the locked categories; template read-back sentence; confirm / cancel / unfreeze (version + 1) with a snapshot per version.
   - Transaction service (`src/server/transactions/service.ts`), the only PayPal writer: lock mandate row → engine → insert purchase in one DB transaction; authorize; capture after re-check, or hold with a 10-minute single-use approval; void; refund; expiry sweep; kill switch. Every status change is compare-and-set.
-  - Shopping agent (`src/server/agent/runner.ts`): Claude Sonnet 5.5, tools `search_catalog`, `get_product`, `request_purchase` only, max 8 steps, waits on holds, stops when frozen. Uses Claude's server-side refusal fallback (`fallbacks: "default"`).
+  - Shopping agent (`src/server/agent/runner.ts`): Claude Haiku 5.5 by default (`AGENT_MODEL` env to switch), tools `search_catalog`, `get_product`, `request_purchase` only, max 8 steps, waits on holds, stops when frozen. Server-side refusal fallback is on only for Sonnet/Opus (Haiku doesn't support it).
   - Receipts (`src/server/receipts.ts`): purchase + rule results + rules snapshot + event timeline + template summary.
   - Tests: 49 pass (`npm test`). Engine table tests, defaults/read-back, and DB integration tests with a fake PayPal: full story, approve, unclear = reject, expiry, kill switch, version bump, **parallel race can't beat the hard limit**, refund frees budget, the DB CHECKs.
   - Terminal: `npm run cli -- story` runs the video story on the real sandbox (see below).
 
 ## Next up
 
-1. Add `ANTHROPIC_API_KEY` to `.env`; run the live parser and agent (`npm run cli -- agent`), fix what breaks. Check the agent actually falls for the poisoned page (the prompt is deliberately not hardened).
+1. Decide how the video shows the attack: Haiku ignores the poisoned page, so the "agent tries gift cards" beat needs the scripted path (`npm run cli -- story`, later `/api/demo/script`).
 2. Stage 3: API routes (REST per `docs/03-api-design.md`), SSE, dashboard, AG Grid ledger, kill switch button, voice.
 3. Pick the voice platform (Vapi vs ElevenLabs): check free credits.
 4. Set up Render (web service + Postgres); run `npm run db:migrate` and seed on deploy.
@@ -60,6 +59,11 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - **Terminal story proof** (Nov 10, real sandbox): $170 headphones HELD (auth 1V525131XJ023835G) → reject → VOIDED; $89.99 candle set CAPTURED (capture 3AF939117P8366344); 5 × $100 gift cards BLOCKED by 4 hard rules, PayPal never called; kill switch froze 2 mandates and the retry was BLOCKED.
 - **Approval tokens**: only the token's hash is stored. The raw token is emitted on the in-memory bus (`approval.token`) for human channels, never to the agent. Humans on the dashboard/voice can also decide by approval id; `decideApproval` rejects any non-`user:` actor either way.
 - **No-vault fallback** is wired (`RESERVED` + approve URL, then `completeFallbackAuthorization`) but not tested against the sandbox.
+
+- **Models** (Nov 10): Haiku 5.5 for both the parser and the agent. It's about 1/20th of Sonnet's price ($0.10 / $0.50 per M tokens), and in live runs it parsed mandates correctly and shopped sensibly. Sonnet 5 costs the same as Sonnet 5.5, so if we upgrade it's straight to `claude-sonnet-5-5`.
+- **Live agent proof** (Nov 10, Haiku 5.5): plain brief → bought a $145 perfume under budget. Headphones brief → $170 HELD → "reject" → VOIDED (auth 60X20706L8171245F) → agent searched again. Poisoned page → agent **ignored** the injection and called it out. So the model resisted; the engine is still the guarantee.
+- **Parser drift**: Haiku sometimes adds `fashion`/`toys` to a gift's allowed categories. Harmless (soft rule), but pin the demo text and re-check before recording.
+- CLI prompts can be scripted: `ANSWERS="y,reject" npm run cli -- agent "<text>"`.
 
 ## Open questions
 
