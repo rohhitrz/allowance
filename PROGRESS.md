@@ -6,8 +6,8 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 ## Current stage
 
-**Stage 2: Core engine (Tue 10 Nov)**: DONE ✓. Scripted story and the live Claude agent both work from the terminal on the real PayPal sandbox.
-- Stage 1 gate PASSED on Nov 10: Vault + authorize/capture/void/refund all work in sandbox with no buyer popup.
+**Stage 3: Product + voice (Wed 11 Nov)**: core built and tested in the browser on the real PayPal sandbox. Left: Vapi (or stay on browser speech), Render deploy, and polish.
+- Stage 2 (core engine) DONE ✓. Stage 1 (PayPal spike) DONE ✓.
 
 ## Done
 
@@ -46,20 +46,32 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - `npm run cli -- story` is fully scripted (fixed mandate) even with a Claude key; `--claude` opts in to live parsing. Beat 4 is labelled an attack test: a compromised agent, not a live model exploit.
   - Heads-up: the Stage 3 session shares the dev and test databases; run the story and tests when it isn't using them.
 
+- [x] **Stage 3 product** (Nov 10–11):
+  - **REST API** (`src/app/api/**`), per `docs/03-api-design.md`: session, health, mandates (create / confirm+start agent / cancel / unfreeze / runs), freeze-all, runs (get / stop), purchases (list / get / create / receipt / refund / fallback authorize), approvals (list / decide by approval id or token), catalog, events, PayPal vault (status / setup / return), demo reset + scripted beats. One error shape; zod bodies. Not built: `PATCH /api/mandates/:id` (edit a draft) and `Idempotency-Key` on decision/refund (both already idempotent by state).
+  - **Live updates**: SSE at `/api/events/stream` from the in-memory bus, 15 s heartbeat, replays from `Last-Event-ID`. The bus is per process: events from `npm run cli` don't reach an open dashboard (refresh it).
+  - **Auth** (`src/server/http/auth.ts`): passcode → signed httpOnly cookie (dashboard open if `APP_PASSCODE` is unset); `x-vapi-secret` for Vapi; bearer `MCP_API_KEY` for MCP. Page guard in `src/proxy.ts` (Next 16's renamed middleware). Login at `/login`.
+  - **Dashboard** (`src/components/`): command bar with push-to-talk, approval card with countdown, mandate cards (spend bar, budget marker, confirm / run agent / stop / cancel / unfreeze), **AG Grid ledger** (status chips, failed-rule pills, PayPal ids, quick filter, stat tiles; rows upserted live with `applyTransaction`), receipt drawer (summary, all 10 rules, PayPal ids, mandate snapshot, timeline, refund button), live activity feed, kill switch, "Link PayPal", demo-script menu.
+  - **Voice**: browser `SpeechRecognition` + `speechSynthesis` → `/api/voice/local`, recorded as `user:voice`. Routing is deterministic: after a question, the next answer is that answer; only "approve" approves, anything else rejects. New holds are read out automatically from the stored template. `/api/voice/tools` is the Vapi adapter on the same handlers (`src/server/voice/tools.ts`), untested against Vapi.
+  - **MCP** (`/api/mcp`, stateless streamable HTTP): create_mandate (draft only), list_mandates, get_mandate, search_catalog, request_purchase, get_receipt, freeze_all. A client sees its own mandates plus the shared grocery mandate.
+  - **Background sweep** (`src/instrumentation.ts`): every 60 s, expire stale holds (void) and past-date mandates.
+  - **Browser proof** (Nov 10 night, real sandbox): scripted beats from the UI: hold → "reject" typed in the command bar → VOIDED; candle CAPTURED; 5 gift cards BLOCKED (receipt: 4 hard rules, "PayPal never called"); kill switch froze 2 mandates, retry BLOCKED; refund from the receipt drawer → REFUNDED, spend back to $0. Live Claude: typed a housewarming mandate → read-back → "yes" → agent bought a $45 herb garden kit. API: hold → approve → CAPTURED; repeat decision is a no-op. MCP via curl: unauthenticated → 401; tools/list; bought 2 × coffee beans on the grocery mandate → CAPTURED, and it appeared live in the open dashboard.
+  - Tests: 70 pass (adds auth tests). `next build` passes.
+
 ## Next up
 
-1. Decide how the video shows the attack: Haiku ignores the poisoned page, so the "agent tries gift cards" beat needs the scripted path (`npm run cli -- story`, later `/api/demo/script`).
-2. Stage 3: API routes (REST per `docs/03-api-design.md`), SSE, dashboard, AG Grid ledger, kill switch button, voice.
-3. Pick the voice platform (Vapi vs ElevenLabs): check free credits.
-4. Set up Render (web service + Postgres); run `npm run db:migrate` and seed on deploy.
+1. Deploy to Render (web service + Postgres): set `APP_PASSCODE`, `MCP_API_KEY`, `APP_BASE_URL`, `PAYPAL_DEMO_VAULT_ID` (+ email); run `npm run db:migrate` then a demo reset on deploy. Test in a private window.
+2. Voice: decide Vapi vs staying on browser speech. Browser speech works now in Chrome (needs mic permission). If Vapi: create the assistant with `VAPI_TOOL_DEFS`, point it at `/api/voice/tools`, set `VAPI_WEBHOOK_SECRET`.
+3. Connect Claude Desktop to `/api/mcp` with the bearer key for the video's MCP beat.
+4. Video attack beat: use the demo-script menu ("4 · Injection: 5 gift cards"), since Haiku ignores the poisoned page.
+5. Polish if time: mobile layout of the ledger, `PATCH /api/mandates/:id`.
 
 ## Stages
 
 | # | Stage | When | Status |
 | --- | --- | --- | --- |
 | 1 | Prove PayPal: repo, license, spike | Mon night | Done ✓ |
-| 2 | Core engine: DB schema, mandate parser, policy engine + tests, transaction service, shopping agent, seed catalog | Tue | Built; scripted story passes; Claude parts need a live run |
-| 3 | Product + voice: dashboard, AG Grid ledger, receipts, kill switch, in-app voice; then MCP, refunds | Wed (freeze 10 PM) | Not started |
+| 2 | Core engine: DB schema, mandate parser, policy engine + tests, transaction service, shopping agent, seed catalog | Tue | Done ✓ |
+| 3 | Product + voice: dashboard, AG Grid ledger, receipts, kill switch, in-app voice; then MCP, refunds | Wed (freeze 10 PM) | Built + browser-tested; deploy and Vapi left |
 | 4 | Ship: fixes, video, README, submission | Thu | Not started |
 
 ## Decisions and findings
@@ -83,6 +95,9 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - **Parser drift**: Haiku sometimes adds `fashion`/`toys` to a gift's allowed categories. Harmless (soft rule), but pin the demo text and re-check before recording.
 - CLI prompts can be scripted: `ANSWERS="y,reject" npm run cli -- agent "<text>"`.
 
+- **Dev server**: `npm run dev` (or the "web" entry in `.claude/launch.json`). Local `.env` has a generated `MCP_API_KEY`; `APP_PASSCODE` is empty locally, so the dashboard is open.
+- **Next 16 notes**: middleware is now `src/proxy.ts`; `cacheComponents` is on, so the dashboard is a static shell that loads data client-side; route handlers read `ctx.params` as a Promise.
+
 ## Open questions
 
-- Vapi or ElevenLabs for voice?
+- Vapi, or ship with browser speech only? (Browser speech is built and works; Vapi adapter exists but is untested.)
