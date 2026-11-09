@@ -126,6 +126,10 @@ export function Dashboard() {
         const id = String(e.data.approvalId ?? "");
         if (prompt && id) voice.current?.announceApproval({ id, prompt } as Approval);
       }
+      // Tell the user how a run ended (only live events, not ones replayed after a reconnect).
+      if (e.type === "run.finished" && e.data.summary && Date.now() - new Date(e.at).getTime() < 30_000) {
+        voice.current?.announce(String(e.data.summary));
+      }
       if (e.type === "vault.linked") api<{ linked: boolean }>("/api/paypal/vault").then(setVault);
       schedule();
     };

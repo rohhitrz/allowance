@@ -8,13 +8,19 @@
  *   3. otherwise it's a command, and anything unrecognised is a new mandate
  * Only an explicit, un-negated "approve" approves. Anything else said to a hold rejects it.
  */
-export type Awaiting = { kind: "approval"; approvalId: string } | { kind: "confirm"; mandateId: string } | null;
+export type Awaiting =
+  | { kind: "approval"; approvalId: string }
+  | { kind: "confirm"; mandateId: string }
+  /** The user said "no" to starting this draft. A later bare "start now" still means this one. */
+  | { kind: "draft"; mandateId: string }
+  | null;
 
 export type Intent =
   | { kind: "freeze" }
   | { kind: "decide"; decision: "approve" | "reject"; approvalId?: string }
-  | { kind: "confirm"; mandateId: string }
-  | { kind: "keep_draft" }
+  /** No mandateId: the server starts the user's only draft, and refuses if there are several. */
+  | { kind: "confirm"; mandateId?: string }
+  | { kind: "keep_draft"; mandateId: string }
   | { kind: "refund" }
   | { kind: "activity" }
   | { kind: "pending" }
@@ -42,6 +48,15 @@ export function isStop(t: string): boolean {
 
 export const isYes = (t: string) => /^\W*(yes|yeah|yep|sure|confirm|go|start|do it|ok(ay)?)\b/i.test(t);
 
+/**
+ * A short go-ahead with nothing else in it: "start now", "yes go ahead", "ok start shopping".
+ * Never a sentence with an amount or a product in it, which is a new mandate.
+ */
+export function isBareStart(t: string): boolean {
+  if (/[\d$]/.test(t) || t.trim().split(/\s+/).length > 6) return false;
+  return /^\W*(?:(?:yes|yeah|yep|ok(?:ay)?|sure|please|now|then)\W+)*(?:start|go(?: ahead)?|begin|confirm|do it|buy it|run it)\b/i.test(t);
+}
+
 export function interpret(utterance: string, awaiting: Awaiting): Intent {
   const t = utterance.trim();
   if (isStop(t)) return { kind: "freeze" };
@@ -49,8 +64,9 @@ export function interpret(utterance: string, awaiting: Awaiting): Intent {
     return { kind: "decide", decision: isApprove(t) ? "approve" : "reject", approvalId: awaiting.approvalId };
   }
   if (awaiting?.kind === "confirm") {
-    return isYes(t) ? { kind: "confirm", mandateId: awaiting.mandateId } : { kind: "keep_draft" };
+    return isYes(t) ? { kind: "confirm", mandateId: awaiting.mandateId } : { kind: "keep_draft", mandateId: awaiting.mandateId };
   }
+  if (isBareStart(t)) return awaiting?.kind === "draft" ? { kind: "confirm", mandateId: awaiting.mandateId } : { kind: "confirm" };
   // No question was asked. The server decides only if exactly one hold is waiting.
   if (/^\W*(approve|reject)\b/i.test(t)) return { kind: "decide", decision: isApprove(t) ? "approve" : "reject" };
   if (/\b(refund|return it|send it back)\b/i.test(t)) return { kind: "refund" };

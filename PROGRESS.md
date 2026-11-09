@@ -71,6 +71,11 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - **Sandbox rehearsal after the fixes** (Nov 11): hold → voice reject with no id → VOIDED; candle CAPTURED; gift cards BLOCKED; "Approve, don't stop" typed in the command bar → CAPTURED, no freeze. PayPal's real answers match what the reconcile code expects: a captured authorization reads `CAPTURED` and the order lists its capture id; a voided one reads `VOIDED`, and voiding it again returns 422 `PREVIOUSLY_VOIDED`.
   - **Popup checkout on the sandbox, up to PayPal's login**: with the vault unlinked, purchases come back RESERVED with a real `sandbox.paypal.com` approve link and the "Finish in PayPal" card shows. Returning without approving keeps the reservation (PayPal says `ORDER_NOT_APPROVED`); Cancel marks it FAILED and frees the budget. **Not done: actually approving as the sandbox buyer**, which needs a human to sign in to PayPal.
 
+- [x] **Voice fixes from user testing** (Nov 11), 105 tests:
+  - Saying "no" to a read-back keeps the draft in context: a later "start now" / "go ahead" starts that draft instead of being parsed as a new mandate. With no context, a bare "start now" starts the user's only draft (refuses if there are several). A sentence with an amount or product is still a new mandate.
+  - Mic listens continuously: it no longer cuts off at the first pause. It sends after 3.5 s of silence, or when you tap the mic again (60 s max).
+  - When the agent stops, it says how it ended in one templated sentence (bought X, or "nothing fits your rules (at most $X in …)"), shown in the feed and spoken.
+
 ## Next up
 0. Popup checkout: unlink the vault, click "Approve in PayPal", sign in as the sandbox buyer and confirm it lands back CAPTURED. Only needed if the demo won't use the vault.
 

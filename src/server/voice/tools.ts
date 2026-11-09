@@ -11,12 +11,12 @@ import { DEMO_USER_ID, draftMandateFromText } from "../mandates/service";
 import { decideApproval, freezeAll, refundPurchase } from "../transactions/service";
 import { fmt } from "../money";
 import { db } from "../db";
-import { purchases } from "../db/schema";
-import { desc, eq } from "drizzle-orm";
+import { mandates, purchases } from "../db/schema";
+import { and, desc, eq } from "drizzle-orm";
 
 const schemas = {
   create_mandate: z.object({ text: z.string().trim().min(3).max(2000) }),
-  confirm_mandate: z.object({ mandateId: z.string() }),
+  confirm_mandate: z.object({ mandateId: z.string().optional() }),
   list_activity: z.object({ limit: z.number().int().min(1).max(10).optional() }),
   get_pending_approval: z.object({}),
   decide_approval: z.object({ token: z.string().optional(), approvalId: z.string().optional(), decision: z.string() }),
@@ -46,10 +46,24 @@ export async function runVoiceTool(name: string, rawArgs: unknown, actor: string
       return { mandateId: r.mandate.id, summary: r.summary };
     }
     case "confirm_mandate": {
-      const r = await confirmAndMaybeStart(String(args.mandateId), actor, true);
+      let mandateId = args.mandateId as string | undefined;
+      if (!mandateId) {
+        // "Start now" with no draft in context: only safe when exactly one draft is waiting.
+        const drafts = await db()
+          .select({ id: mandates.id, title: mandates.title })
+          .from(mandates)
+          .where(and(eq(mandates.userId, DEMO_USER_ID), eq(mandates.status, "DRAFT")))
+          .orderBy(desc(mandates.createdAt));
+        if (!drafts.length) return { status: "NONE", message: "There's no draft to start. Tell me what to buy first." };
+        if (drafts.length > 1) {
+          return { status: "AMBIGUOUS", message: `You have ${drafts.length} drafts. Press Confirm on the one you want; nothing was started.` };
+        }
+        mandateId = drafts[0].id;
+      }
+      const r = await confirmAndMaybeStart(mandateId, actor, true);
       return {
         status: r.mandate.status,
-        message: r.run ? "Done. I'm shopping now." : `Confirmed. ${r.runError ? "The shopping agent couldn't start." : ""}`.trim(),
+        message: r.run ? `Started “${r.mandate.title}”. I'm shopping now.` : `Confirmed. ${r.runError ? "The shopping agent couldn't start." : ""}`.trim(),
       };
     }
     case "list_activity": {
@@ -128,7 +142,7 @@ export async function runVoiceTool(name: string, rawArgs: unknown, actor: string
 /** Tool definitions for Vapi's assistant config (and docs). */
 export const VAPI_TOOL_DEFS = [
   { name: "create_mandate", description: "Turn what the user said into a draft spending mandate. Read the returned summary back word for word and ask them to confirm.", parameters: { type: "object", properties: { text: { type: "string", description: "The user's words" } }, required: ["text"] } },
-  { name: "confirm_mandate", description: "Confirm a draft mandate after the user clearly said yes. Starts the shopping agent.", parameters: { type: "object", properties: { mandateId: { type: "string" } }, required: ["mandateId"] } },
+  { name: "confirm_mandate", description: "Confirm a draft mandate after the user clearly said yes. Starts the shopping agent. Without mandateId it starts the user's only draft.", parameters: { type: "object", properties: { mandateId: { type: "string" } } } },
   { name: "list_activity", description: "Recent purchase attempts as short sentences.", parameters: { type: "object", properties: { limit: { type: "integer" } } } },
   { name: "get_pending_approval", description: "The oldest purchase waiting for the user: its approvalId and the exact prompt to read out. Call this before decide_approval.", parameters: { type: "object", properties: {} } },
   { name: "decide_approval", description: "Send the user's answer for the approvalId whose prompt you just read out. Use decision 'approve' only if they clearly said approve; otherwise 'reject'.", parameters: { type: "object", properties: { approvalId: { type: "string" }, decision: { type: "string", enum: ["approve", "reject"] } }, required: ["approvalId", "decision"] } },

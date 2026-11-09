@@ -107,6 +107,28 @@ export function purchaseMessage(r: PurchaseResult): string {
   }
 }
 
+const STATUS_WORDS: Partial<Record<string, string>> = {
+  BLOCKED: "blocked by your rules",
+  VOIDED: "not approved, so no money moved",
+  FAILED: "a failed payment",
+  HELD: "still waiting for you",
+  RESERVED: "still waiting for you in PayPal",
+};
+
+/**
+ * What the agent tells the user when it stops. Built from the mandate and the last purchase,
+ * not from model text, so it's short, true and safe to read aloud.
+ */
+export function finishSummary(rules: { hardLimit: { amountCents: number }; allowedCategories?: string[] | null }, last: PurchaseResult | null): string {
+  const p = last?.purchase;
+  if (p?.status === "CAPTURED") return `Done: I bought ${p.quantity} × ${p.productName} for ${fmt(p.totalCents)}.`;
+  const cats = rules.allowedCategories?.length
+    ? ` in ${rules.allowedCategories.length > 1 ? `${rules.allowedCategories.slice(0, -1).join(", ")} or ${rules.allowedCategories.at(-1)}` : rules.allowedCategories[0]}`
+    : "";
+  const lastTry = p ? ` My last try, ${p.productName} (${fmt(p.totalCents)}), was ${STATUS_WORDS[p.status] ?? p.status.toLowerCase()}.` : "";
+  return `I stopped without buying anything: nothing I found fits your rules (at most ${fmt(rules.hardLimit.amountCents)}${cats}).${lastTry} Raise the limit or change the categories and start again.`;
+}
+
 /** Default hold handler: wait until the approval leaves PENDING (decided, expired or cancelled). */
 async function waitForDecision(r: PurchaseResult) {
   const approvalId = r.approval?.id;
@@ -233,7 +255,8 @@ async function runAgent(runId: string, mandate: Awaited<ReturnType<typeof getMan
       messages.push({ role: "user", content: results });
     }
     await setRunStatus(runId, "DONE");
-    await recordEvent(db(), { actor: ACTOR, type: "run.finished", mandateId: mandate.id, data: { runId, status: "DONE" } });
+    const summary = finishSummary(r, lastPurchase);
+    await recordEvent(db(), { actor: ACTOR, type: "run.finished", mandateId: mandate.id, data: { runId, status: "DONE", summary } });
     return { runId, status: "DONE" as const, lastPurchase };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

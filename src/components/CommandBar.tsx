@@ -25,7 +25,11 @@ type SR = {
   onerror: ((e: { error: string }) => void) | null;
 };
 
-export type CommandBarHandle = { announceApproval: (a: Approval) => void };
+export type CommandBarHandle = { announceApproval: (a: Approval) => void; announce: (text: string) => void };
+
+/** Keep listening through pauses; send after this much silence, or when the mic is tapped again. */
+const SILENCE_MS = 3500;
+const MAX_LISTEN_MS = 60_000;
 
 const tool = <T,>(name: string, args: Record<string, unknown> = {}) =>
   api<{ result: T }>("/api/voice/local", { body: { tool: name, args } }).then((r) => r.result);
@@ -41,6 +45,7 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
   const [supported, setSupported] = useState(false);
   const awaiting = useRef<Awaiting>(null);
   const rec = useRef<SR | null>(null);
+  const finishListening = useRef<(() => void) | null>(null);
   const speakRef = useRef(speakReplies);
   speakRef.current = speakReplies;
 
@@ -63,6 +68,9 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
     announceApproval(a) {
       awaiting.current = { kind: "approval", approvalId: a.id };
       say(a.prompt);
+    },
+    announce(t) {
+      say(t);
     },
   }));
 
@@ -100,12 +108,14 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
             break;
           }
           case "confirm": {
-            const r = await tool<{ message: string }>("confirm_mandate", { mandateId: intent.mandateId });
+            const r = await tool<{ message: string }>("confirm_mandate", intent.mandateId ? { mandateId: intent.mandateId } : {});
             say(r.message);
             break;
           }
           case "keep_draft":
-            say("Okay. I left it as a draft; nothing will be bought.");
+            // Remember the draft: a later "start now" means this one, not a new mandate.
+            awaiting.current = { kind: "draft", mandateId: intent.mandateId };
+            say("Okay, it's still a draft and nothing will be bought. Say “start now” when you're ready, or tell me what to change.");
             break;
           case "refund": {
             const r = await tool<{ message: string }>("refund");
@@ -144,7 +154,7 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
 
   const toggleMic = () => {
     if (listening) {
-      rec.current?.stop();
+      finishListening.current?.();
       return;
     }
     const w = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
@@ -154,24 +164,57 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
     const r = new Ctor();
     r.lang = "en-US";
     r.interimResults = true;
-    r.continuous = false;
-    let finalText = "";
+    // Continuous: Chrome would otherwise end at the first short pause and cut the sentence off.
+    r.continuous = true;
+    const startedAt = Date.now();
+    let committed = ""; // text from earlier recognition sessions (Chrome still ends one now and then)
+    let sessionFinal = "";
+    let done = false;
+    let silence: ReturnType<typeof setTimeout> | undefined;
+    const joined = () => `${committed} ${sessionFinal}`.replace(/\s+/g, " ").trim();
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(silence);
+      r.stop(); // onend sends what was heard
+    };
+    finishListening.current = finish;
+
     r.onresult = (e) => {
+      let fin = "";
       let live = "";
       for (let i = 0; i < e.results.length; i++) {
         const res = e.results[i];
-        if (res.isFinal) finalText += res[0].transcript;
+        if (res.isFinal) fin += res[0].transcript;
         else live += res[0].transcript;
       }
-      setInterim(finalText + live);
+      sessionFinal = fin;
+      setInterim(`${joined()} ${live}`.trim());
+      clearTimeout(silence);
+      silence = setTimeout(finish, SILENCE_MS);
     };
     r.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") done = true;
       if (e.error !== "no-speech" && e.error !== "aborted") say(`Microphone error: ${e.error}`);
     };
     r.onend = () => {
+      committed = joined();
+      sessionFinal = "";
+      if (!done && Date.now() - startedAt < MAX_LISTEN_MS) {
+        try {
+          r.start(); // the browser stopped on its own: keep listening
+          return;
+        } catch {
+          /* fall through and send what we have */
+        }
+      }
+      done = true;
+      clearTimeout(silence);
+      finishListening.current = null;
       setListening(false);
       setInterim("");
-      if (finalText.trim()) void handle(finalText);
+      if (committed) void handle(committed);
     };
     rec.current = r;
     setListening(true);
@@ -192,11 +235,11 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
           type="button"
           onClick={toggleMic}
           disabled={!supported || busy}
-          title={supported ? "Push to talk" : "Speech recognition isn't available in this browser; type instead"}
+          title={supported ? (listening ? "Tap to send" : "Tap to talk") : "Speech recognition isn't available in this browser; type instead"}
           className={`relative flex w-12 shrink-0 items-center justify-center rounded-xl text-white transition-colors disabled:cursor-not-allowed disabled:bg-zinc-300 ${
             listening ? "bg-red-600" : "bg-zinc-900 hover:bg-zinc-700"
           }`}
-          aria-label={listening ? "Stop listening" : "Push to talk"}
+          aria-label={listening ? "Stop listening and send" : "Tap to talk"}
         >
           {listening && <span className="absolute inset-0 animate-ping rounded-xl bg-red-500/40" />}
           <svg viewBox="0 0 24 24" className="relative h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -208,7 +251,7 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
           value={listening ? interim : text}
           onChange={(e) => setText(e.target.value)}
           readOnly={listening}
-          placeholder={listening ? "Listening…" : "“Find a birthday gift for my sister, around $150, never more than $200…”"}
+          placeholder={listening ? "Listening… tap the mic when you're done" : "“Find a birthday gift for my sister, around $150, never more than $200…”"}
           className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10"
         />
         <Button type="submit" variant="primary" disabled={busy || listening || !text.trim()} className="rounded-xl px-4">

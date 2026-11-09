@@ -169,7 +169,7 @@ const FEED_TEXT: Record<string, (e: Event) => string> = {
   "run.started": () => "Agent started shopping",
   "run.step": (e) => stepText(e),
   "run.waiting": () => "Agent is waiting for your approval",
-  "run.finished": (e) => `Agent finished: ${String(e.data.status).toLowerCase()}`,
+  "run.finished": (e) => (e.data.summary ? String(e.data.summary) : `Agent finished: ${String(e.data.status).toLowerCase()}`),
   "purchase.proposed": (e) => `Proposed ${e.data.quantity} × ${e.data.productName} (${money(Number(e.data.totalCents))})`,
   "purchase.blocked": (e) =>
     `Blocked: ${((e.data.failed as { rule: string }[]) ?? []).map((r) => r.rule).join(", ")}. PayPal never called`,

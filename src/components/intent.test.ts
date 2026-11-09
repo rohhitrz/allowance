@@ -40,7 +40,7 @@ describe("command bar intent", () => {
 
   it("answers to a read-back", () => {
     expect(interpret("yes", draft)).toEqual({ kind: "confirm", mandateId: "man_1" });
-    expect(interpret("no, change it", draft)).toEqual({ kind: "keep_draft" });
+    expect(interpret("no, change it", draft)).toEqual({ kind: "keep_draft", mandateId: "man_1" });
   });
 
   it("other commands, and anything else is a mandate", () => {
@@ -51,5 +51,25 @@ describe("command bar intent", () => {
       kind: "mandate",
       text: "Find a birthday gift for my sister, around $150",
     });
+  });
+
+  it("“no” keeps the draft, and a later “start now” starts that same draft", () => {
+    expect(interpret("no", draft)).toEqual({ kind: "keep_draft", mandateId: "man_1" });
+    const kept: Awaiting = { kind: "draft", mandateId: "man_1" };
+    for (const t of ["start now", "ok start", "yes, go ahead", "start shopping", "go"]) {
+      expect(interpret(t, kept)).toEqual({ kind: "confirm", mandateId: "man_1" });
+    }
+  });
+
+  it("a bare “start now” with no context asks the server for the only draft; it is never parsed as a mandate", () => {
+    expect(interpret("start now", null)).toEqual({ kind: "confirm" });
+    expect(interpret("Start", null)).toEqual({ kind: "confirm" });
+  });
+
+  it("a real request is still a mandate, even after a kept draft", () => {
+    const kept: Awaiting = { kind: "draft", mandateId: "man_1" };
+    expect(interpret("Start a weekly grocery budget of $200", kept).kind).toBe("mandate");
+    expect(interpret("Go buy a birthday gift for my mom under $80", null).kind).toBe("mandate");
+    expect(interpret("Find a book for my dad", kept).kind).toBe("mandate");
   });
 });
