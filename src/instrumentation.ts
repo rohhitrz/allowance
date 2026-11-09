@@ -5,7 +5,12 @@ export async function register() {
   if (g.__allowanceSweep) return;
   const { sweepExpiredApprovals } = await import("./server/transactions/service");
   const { expireMandates } = await import("./server/mandates/service");
+  let running = false;
   g.__allowanceSweep = setInterval(() => {
-    Promise.all([sweepExpiredApprovals(), expireMandates()]).catch((e) => console.error("[sweep]", e));
+    if (running) return; // a slow PayPal must not stack sweeps on top of each other
+    running = true;
+    Promise.all([sweepExpiredApprovals(), expireMandates()])
+      .catch((e) => console.error("[sweep]", e))
+      .finally(() => (running = false));
   }, 60_000);
 }

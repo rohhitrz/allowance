@@ -256,6 +256,16 @@ export async function getOrderCaptures(orderId: string) {
   return (order.purchase_units ?? []).flatMap((u) => u.payments?.captures ?? []).map((c) => ({ captureId: c.id, status: c.status }));
 }
 
+/** The authorizations PayPal holds for an order: how we find one whose response we never stored. */
+export async function getOrderAuthorizations(orderId: string) {
+  const order = await request<{
+    purchase_units?: { payments?: { authorizations?: { id: string; status: string }[] } }[];
+  }>("GET", `/v2/checkout/orders/${orderId}`);
+  return (order.purchase_units ?? [])
+    .flatMap((u) => u.payments?.authorizations ?? [])
+    .map((a) => ({ authorizationId: a.id, status: a.status }));
+}
+
 /** status: COMPLETED | PENDING | DECLINED | FAILED | REFUNDED | PARTIALLY_REFUNDED */
 export async function getCapture(captureId: string) {
   const res = await request<{ id: string; status: string }>("GET", `/v2/payments/captures/${captureId}`);

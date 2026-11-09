@@ -81,6 +81,14 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 - [x] **Deploy prep** (Nov 11): `render.yaml` Blueprint (web + Postgres, free plans, Oregon). `npm run start:render` = `scripts/deploy.ts` (migrate + idempotent seed + link demo vault from env) then `next start`. Public URL falls back to `RENDER_EXTERNAL_URL` (`src/server/base-url.ts`) so PayPal return links work behind Render's proxy. Verified locally in production mode with a passcode.
 
+- [x] **Fourth review fixes** (Nov 10), 126 tests, story re-run on the real sandbox:
+  - An approved capture that fails because PayPal is unreachable or erroring (network, 5xx, 429, unknown state) is **kept and retried** by the sweep (`capture retry n/5`), with the full rule re-check each time. Only a real refusal (400/422, or a capture PayPal reports as DECLINED/FAILED) voids it. After 5 tries it is voided and marked FAILED.
+  - A pending capture later declined now voids the authorization behind it and drops the dead capture id. If that void fails the purchase goes back to AUTHORIZED and the void is retried.
+  - A declined capture's id is never adopted as a successful capture. A pending capture refunded at PayPal becomes REFUNDED; a completed one just clears the flag (no second capture event).
+  - Crash cleanup knows which PayPal call was in flight (`authorizing: …` marker). A crashed popup-order creation is FAILED without replaying anything. A timed-out popup checkout reads the order first and voids any authorization PayPal made. A stuck saved-account authorization is only FAILED on a 400/422; 401/409/429/5xx/network errors leave it RESERVED for a later try.
+  - Stop words: only a whole-sentence command or an unmistakable phrase freezes. "freeze-dried strawberries", "Stop and Shop gift card" are shopping requests.
+  - The full approvals list shows a hold past its expiry as EXPIRED. The sweep backs off per purchase (1 → 30 min), calls PayPal 4 at a time, and never overlaps itself.
+
 ## Next up
 0. Popup checkout: unlink the vault, click "Approve in PayPal", sign in as the sandbox buyer and confirm it lands back CAPTURED. Only needed if the demo won't use the vault.
 

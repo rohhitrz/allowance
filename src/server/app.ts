@@ -50,7 +50,9 @@ export async function listApprovals(status?: "PENDING" | "APPROVED" | "REJECTED"
     .where(status ? eq(approvals.status, status) : undefined)
     .orderBy(desc(approvals.createdAt))
     .limit(200);
-  return rows.map((r) => approvalDto(r.a, r.p));
+  // A hold past its expiry can't be approved any more, even if the sweep hasn't voided it yet.
+  const now = new Date();
+  return rows.map((r) => approvalDto(r.a.status === "PENDING" && r.a.expiresAt <= now ? { ...r.a, status: "EXPIRED" } : r.a, r.p));
 }
 
 export async function listEvents(opts: { since?: number; mandateId?: string; limit?: number } = {}) {

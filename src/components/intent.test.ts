@@ -10,7 +10,7 @@ describe("command bar intent", () => {
     expect(interpret("approve it and do not stop shopping", hold).kind).toBe("decide");
   });
 
-  it.each(["stop", "Stop everything", "please stop", "stop it now", "freeze it all", "kill switch", "ok, stop everything"])(
+  it.each(["stop", "Stop everything", "please stop", "stop it now", "freeze it all", "kill switch", "ok, stop everything", "Stop!", "ok stop shopping", "freeze all", "halt"])(
     "“%s” freezes, even while a question is open",
     (t) => {
       expect(interpret(t, null)).toEqual({ kind: "freeze" });
@@ -19,7 +19,18 @@ describe("command bar intent", () => {
     },
   );
 
-  it.each(["don't stop", "never stop", "A rubber door stop for my office, under $20", "Find a bus stop poster, around $30"])(
+  it.each([
+    "don't stop",
+    "never stop",
+    "A rubber door stop for my office, under $20",
+    "Find a bus stop poster, around $30",
+    "freeze-dried strawberries under $20",
+    "Freeze dried fruit for hiking, around $15",
+    "Stop and Shop gift card for my mum, $50",
+    "Stop motion animation kit for my nephew, under $40",
+    "Halt and Catch Fire box set, around $30",
+    "stop buying coffee beans and get tea instead, $20 a week",
+  ])(
     "“%s” is not a stop command",
     (t) => expect(isStop(t)).toBe(false),
   );

@@ -35,15 +35,22 @@ export function isApprove(t: string): boolean {
 }
 
 /**
- * A stop command: "stop", "stop everything", "freeze it all", "kill switch".
- * The word has to lead the sentence or be an unmistakable phrase, and must not be negated:
- * "approve, don't stop" is an approval, and "a rubber door stop" is a shopping request.
+ * A stop command: "stop", "stop everything", "please stop it now", "freeze it all", "kill switch".
+ *
+ * Freezing is the safe direction, but freezing by accident still breaks what the user asked
+ * for, so a stop word alone is not enough. It counts only when
+ *   - it comes with an unmistakable object ("stop everything", "freeze it all"), or
+ *   - the whole sentence is the command and nothing else ("stop", "ok stop it now").
+ * So these are shopping requests, not stops: "freeze-dried strawberries under $20",
+ * "Stop and Shop gift card", "a rubber door stop". Negated forms ("approve, don't stop") never count.
  */
+const STOP_WORD = "(?:stop|freeze|halt)";
+const FILLER = "(?:please|ok(?:ay)?|now|just|right|immediately|all|it|this|that|the agent|the bot|shopping|buying|spending|paying)";
+const WHOLE_SENTENCE_STOP = new RegExp(String.raw`^\W*(?:${FILLER}\W+)*${STOP_WORD}(?:\W+${FILLER})*\W*$`, "i");
+
 export function isStop(t: string): boolean {
-  if (negated("(?:stop|freeze|halt)").test(t)) return false;
-  return (
-    /\b(stop|freeze|halt) (everything|it all|all)\b|\bkill switch\b/i.test(t) || /^\W*(?:please\s+)?(?:stop|freeze|halt)\b/i.test(t)
-  );
+  if (negated(STOP_WORD).test(t)) return false;
+  return /\b(?:stop|freeze|halt) (?:everything|it all|all of it)\b|\bkill switch\b/i.test(t) || WHOLE_SENTENCE_STOP.test(t);
 }
 
 export const isYes = (t: string) => /^\W*(yes|yeah|yep|sure|confirm|go|start|do it|ok(ay)?)\b/i.test(t);

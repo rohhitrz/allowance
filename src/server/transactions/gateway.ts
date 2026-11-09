@@ -14,6 +14,7 @@ export type PaymentGateway = Pick<
   | "refundCapture"
   | "getAuthorization"
   | "getOrderCaptures"
+  | "getOrderAuthorizations"
   | "getCapture"
 >;
 
