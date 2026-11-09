@@ -6,9 +6,8 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 ## Current stage
 
-**Stage 1: Prove PayPal (Mon 9 Nov night)**
-- Gate: the PayPal sandbox spike passes (`npm run spike -- run`), or we decide on the popup fallback.
-- Blocked on: Rohit adding sandbox keys to `.env` and approving the Vault URL as the sandbox buyer.
+**Stage 2: Core engine (Tue 10 Nov)**: not started.
+- Stage 1 gate PASSED on Nov 10: Vault + authorize/capture/void/refund all work in sandbox with no buyer popup.
 
 ## Done
 
@@ -17,10 +16,11 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - [x] Next.js 16 app scaffolded, MIT license, `.env.example`
 - [x] PayPal client (`src/server/paypal/client.ts`) and spike script (`scripts/paypal-spike.ts`)
 - [x] Public repo: https://github.com/rohhitrz/allowance (MIT)
+- [x] **PayPal spike passed**: Vault (save buyer's PayPal once), then authorize → capture → refund, and authorize → void, all without a popup
 
 ## Next up
 
-1. Run the spike: `check` → `setup` (approve URL as buyer) → `token` → `run`. Write the result below.
+1. Stage 2: DB schema (Drizzle) + seed, policy engine + tests, mandate parser, transaction service, shopping agent.
 2. Pick the voice platform (Vapi vs ElevenLabs): check free credits.
 3. Set up Render (web service + Postgres).
 
@@ -28,7 +28,7 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 | # | Stage | When | Status |
 | --- | --- | --- | --- |
-| 1 | Prove PayPal: repo, license, spike | Mon night | In progress |
+| 1 | Prove PayPal: repo, license, spike | Mon night | Done ✓ |
 | 2 | Core engine: DB schema, mandate parser, policy engine + tests, transaction service, shopping agent, seed catalog | Tue | Not started |
 | 3 | Product + voice: dashboard, AG Grid ledger, receipts, kill switch, in-app voice; then MCP, refunds | Wed (freeze 10 PM) | Not started |
 | 4 | Ship: fixes, video, README, submission | Thu | Not started |
@@ -38,11 +38,12 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - Agents propose, code decides: the policy engine has no LLM; hard-rule breaks never reach PayPal.
 - USD only, amounts in integer cents.
 - Sponsor prize target: AG Grid (receipts ledger).
-- Spike result (in progress, Nov 10): OAuth works. Vault setup returned 403 NOT_AUTHORIZED (token had no vault v3 scope), and buyer checkout said "seller doesn't accept payments in your currency". Cause: the default sandbox accounts are **India** accounts. Fix: use a **US** sandbox business account (new app linked to it, "Save payment methods" ticked) and a **US** sandbox personal buyer.
-  - With the US app ("Allowance US"): buyer-approved order → **authorize ✓ → capture ✓ ($89.99 COMPLETED) → refund ✓ (COMPLETED)**. So the popup fallback path is proven.
-  - Still open: Vault setup token still 403 on the US app (needs "Save payment methods" ticked + saved on that app), and void not yet tested.
+- **PayPal sandbox setup that works** (learned the hard way):
+  - Default sandbox accounts are India accounts → USD checkout and Vault are refused. Use a **US sandbox business account** and a **US sandbox personal buyer**.
+  - The app must have **Save payment methods** ticked **before its keys are first used**. PayPal caches an app's access token (~9 h), so ticking it later doesn't take effect until the token expires. Fix: make a fresh app.
+  - Current app in `.env`: "Allowance Vault" (US business). Vaulted buyer saved in `.spike-state.json` (gitignored).
+  - Spike proof (Nov 10): vault id issued; $89.99 authorize → capture → refund ✓; $170 authorize → void ✓.
 
 ## Open questions
 
-- Does Vault (save PayPal, then authorize with `vault_id`) work in our sandbox app?
 - Vapi or ElevenLabs for voice?

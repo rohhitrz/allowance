@@ -36,7 +36,7 @@ flowchart LR
 
 | Feature | Status |
 | --- | --- |
-| PayPal sandbox client: Vault, authorize, capture, void, refund | Built, being verified |
+| PayPal sandbox client: Vault, authorize, capture, void, refund | Built and verified in sandbox |
 | Mandates from plain language (Claude) | Planned |
 | Policy engine (hard/soft rules) + tests | Planned |
 | Shopping agent (Claude + tools) with prompt-injection demo | Planned |
@@ -65,7 +65,12 @@ The policy engine that decides whether money moves contains **no AI**, by design
 
 ## Run it locally
 
-Requirements: Node 22+, a [PayPal developer](https://developer.paypal.com) sandbox app (with Vault enabled), and a sandbox personal (buyer) account.
+Requirements: Node 22+ and a [PayPal developer](https://developer.paypal.com) account.
+
+PayPal sandbox setup (important):
+1. Under **Testing Tools → Sandbox Accounts**, create a **Business** and a **Personal** account, both with country **United States**. Default sandbox accounts in some countries (e.g. India) can't take USD payments or use Vault.
+2. Under **Apps & Credentials**, create a Merchant app linked to the US business account. Tick **Save payment methods** and save **before** using its keys. PayPal caches app tokens for hours, so enabling it later won't take effect right away.
+3. Copy the app's Client ID and Secret into `.env`.
 
 ```bash
 git clone https://github.com/rohhitrz/allowance.git
@@ -78,7 +83,7 @@ Verify the PayPal sandbox flow end to end:
 
 ```bash
 npm run spike -- check   # OAuth works
-npm run spike -- setup   # prints a URL: approve it as the sandbox buyer
+npm run spike -- setup   # prints a URL: approve it as the US sandbox buyer
 npm run spike -- token   # saves the vaulted PayPal account
 npm run spike -- run     # $89.99 authorize -> capture -> refund, $170 authorize -> void
 ```
