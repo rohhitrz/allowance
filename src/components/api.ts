@@ -21,8 +21,8 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   return data as T;
 }
 
-export const money = (cents: number) =>
-  (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
+/** 15000 -> "$150.00". The server's formatter, so the dashboard and receipts can never disagree. */
+export { fmt as money } from "@/server/money";
 
 export const timeAgo = (iso: string) => {
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);

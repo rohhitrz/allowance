@@ -1,5 +1,5 @@
 /**
- * The PayPal write surface the transaction service uses. Swappable so tests
+ * The PayPal surface the transaction service uses (writes, plus the reads it reconciles with). Swappable so tests
  * can run the state machine without the sandbox. Nothing else imports this.
  */
 import * as paypal from "../paypal/client";
@@ -12,6 +12,9 @@ export type PaymentGateway = Pick<
   | "captureAuthorization"
   | "voidAuthorization"
   | "refundCapture"
+  | "getAuthorization"
+  | "getOrderCaptures"
+  | "getCapture"
 >;
 
 let current: PaymentGateway = paypal;

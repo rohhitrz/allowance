@@ -238,9 +238,26 @@ export async function refundCapture(args: { captureId: string; requestId: string
   return { refundId: res.id, status: res.status };
 }
 
+// ---------- reads (used to reconcile our records with what PayPal actually did) ----------
+
+/** status: CREATED | CAPTURED | PARTIALLY_CAPTURED | VOIDED | DENIED | PENDING */
 export async function getAuthorization(authorizationId: string) {
   return request<{ id: string; status: string; amount: { value: string } }>(
     "GET",
     `/v2/payments/authorizations/${authorizationId}`,
   );
+}
+
+/** The captures PayPal holds for an order: how we find a capture id whose response was lost. */
+export async function getOrderCaptures(orderId: string) {
+  const order = await request<{
+    purchase_units?: { payments?: { captures?: { id: string; status: string }[] } }[];
+  }>("GET", `/v2/checkout/orders/${orderId}`);
+  return (order.purchase_units ?? []).flatMap((u) => u.payments?.captures ?? []).map((c) => ({ captureId: c.id, status: c.status }));
+}
+
+/** status: COMPLETED | PENDING | DECLINED | FAILED | REFUNDED | PARTIALLY_REFUNDED */
+export async function getCapture(captureId: string) {
+  const res = await request<{ id: string; status: string }>("GET", `/v2/payments/captures/${captureId}`);
+  return { captureId: res.id, status: res.status };
 }

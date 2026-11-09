@@ -2,15 +2,16 @@
 /**
  * Push-to-talk (browser SpeechRecognition + speechSynthesis) and a typed fallback.
  * Both go through the same voice tools on the server (/api/voice/local), recorded as user:voice.
- * Routing is deterministic: after a question ("Approve or reject?", "Should I start?") the next
- * answer is read as that answer. Only an explicit "approve" approves; anything else rejects.
+ * Routing is deterministic and lives in ./intent.ts (tested): after a question ("Approve or
+ * reject?", "Should I start?") the next answer is read as that answer. Only an explicit
+ * "approve" approves; anything else rejects.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "./api";
+import { interpret, type Awaiting } from "./intent";
 import type { Approval } from "./types";
 import { Button } from "./ui";
 
-type Awaiting = { kind: "approval"; approvalId: string } | { kind: "confirm"; mandateId: string } | null;
 type Line = { who: "you" | "allowance"; text: string };
 
 type SR = {
@@ -29,8 +30,6 @@ export type CommandBarHandle = { announceApproval: (a: Approval) => void };
 const tool = <T,>(name: string, args: Record<string, unknown> = {}) =>
   api<{ result: T }>("/api/voice/local", { body: { tool: name, args } }).then((r) => r.result);
 
-const isApprove = (t: string) => /\bapprove(d)?\b|\byes,? approve\b/i.test(t) && !/\b(don'?t|do not|not|never|reject)\b/i.test(t);
-const isYes = (t: string) => /^\s*(yes|yeah|yep|sure|confirm|go|start|do it|ok(ay)?)\b/i.test(t);
 
 export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }>(function CommandBar({ onChanged }, ref) {
   const [text, setText] = useState("");
@@ -74,43 +73,64 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
       setLog((l) => [...l.slice(-7), { who: "you", text: t }]);
       setBusy(true);
       try {
-        const wait = awaiting.current;
+        const intent = interpret(t, awaiting.current);
         awaiting.current = null;
+        // After a decision, read out the next hold (if any) so the next answer is about that one.
+        const readNextHold = async (prefix: string) => {
+          const next = await tool<{ approvalId?: string; prompt?: string }>("get_pending_approval");
+          if (next.approvalId && next.prompt) {
+            awaiting.current = { kind: "approval", approvalId: next.approvalId };
+            say(`${prefix} Next: ${next.prompt}`);
+          } else say(prefix);
+        };
 
-        if (/\b(stop everything|stop|freeze|kill switch|halt)\b/i.test(t) && !(wait?.kind === "confirm" && isYes(t))) {
-          const r = await tool<{ message: string }>("freeze_all");
-          say(r.message);
-        } else if (wait?.kind === "approval") {
-          const r = await tool<{ message: string }>("decide_approval", { approvalId: wait.approvalId, decision: isApprove(t) ? "approve" : "reject" });
-          say(r.message);
-        } else if (wait?.kind === "confirm") {
-          if (isYes(t)) {
-            const r = await tool<{ message: string }>("confirm_mandate", { mandateId: wait.mandateId });
+        switch (intent.kind) {
+          case "freeze": {
+            const r = await tool<{ message: string }>("freeze_all");
             say(r.message);
-          } else say("Okay. I left it as a draft; nothing will be bought.");
-        } else if (/^\s*(approve|reject)\b/i.test(t)) {
-          const pending = await tool<{ approvalId?: string; prompt?: string; none?: boolean }>("get_pending_approval");
-          if (!pending.approvalId) say("Nothing is waiting for you.");
-          else {
-            const r = await tool<{ message: string }>("decide_approval", { approvalId: pending.approvalId, decision: isApprove(t) ? "approve" : "reject" });
-            say(r.message);
+            break;
           }
-        } else if (/\b(refund|return it|send it back)\b/i.test(t)) {
-          const r = await tool<{ message: string }>("refund");
-          say(r.message);
-        } else if (/\b(what('?s| is)? (happening|happened)|activity|status|what did you buy)\b/i.test(t)) {
-          const r = await tool<{ items: { what: string; status: string }[] }>("list_activity", { limit: 3 });
-          say(r.items.length ? r.items.map((i) => `${i.what}: ${i.status}.`).join(" ") : "Nothing yet.");
-        } else if (/\b(pending|waiting|anything to approve)\b/i.test(t)) {
-          const pending = await tool<{ approvalId?: string; prompt?: string; message?: string }>("get_pending_approval");
-          if (pending.approvalId) {
-            awaiting.current = { kind: "approval", approvalId: pending.approvalId };
-            say(pending.prompt!);
-          } else say(pending.message ?? "Nothing is waiting for you.");
-        } else {
-          const r = await tool<{ mandateId: string; summary: string }>("create_mandate", { text: t });
-          awaiting.current = { kind: "confirm", mandateId: r.mandateId };
-          say(r.summary);
+          case "decide": {
+            // With no id the server decides only if exactly one hold is waiting; it never guesses.
+            const r = await tool<{ status: string; message: string }>("decide_approval", {
+              decision: intent.decision,
+              ...(intent.approvalId ? { approvalId: intent.approvalId } : {}),
+            });
+            await readNextHold(r.message);
+            break;
+          }
+          case "confirm": {
+            const r = await tool<{ message: string }>("confirm_mandate", { mandateId: intent.mandateId });
+            say(r.message);
+            break;
+          }
+          case "keep_draft":
+            say("Okay. I left it as a draft; nothing will be bought.");
+            break;
+          case "refund": {
+            const r = await tool<{ message: string }>("refund");
+            say(r.message);
+            break;
+          }
+          case "activity": {
+            const r = await tool<{ items: { what: string; status: string }[] }>("list_activity", { limit: 3 });
+            say(r.items.length ? r.items.map((i) => `${i.what}: ${i.status}.`).join(" ") : "Nothing yet.");
+            break;
+          }
+          case "pending": {
+            const pending = await tool<{ approvalId?: string; prompt?: string; message?: string }>("get_pending_approval");
+            if (pending.approvalId) {
+              awaiting.current = { kind: "approval", approvalId: pending.approvalId };
+              say(pending.prompt!);
+            } else say(pending.message ?? "Nothing is waiting for you.");
+            break;
+          }
+          case "mandate": {
+            const r = await tool<{ mandateId: string; summary: string }>("create_mandate", { text: intent.text });
+            awaiting.current = { kind: "confirm", mandateId: r.mandateId };
+            say(r.summary);
+            break;
+          }
         }
       } catch (e) {
         say(`Sorry, that didn't work: ${(e as Error).message}`);

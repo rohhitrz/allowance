@@ -3,7 +3,8 @@
  *   dashboard: signed httpOnly cookie, from a single passcode (APP_PASSCODE)
  *   Vapi:      x-vapi-secret header (VAPI_WEBHOOK_SECRET)
  *   MCP:       Authorization: Bearer <MCP_API_KEY>
- * If APP_PASSCODE is unset (local dev), the dashboard is open.
+ * If APP_PASSCODE is unset, the dashboard is open in local dev and LOCKED in production:
+ * a deployed app with no passcode lets nobody in, rather than everybody.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { AppError } from "../errors";
@@ -25,11 +26,20 @@ export function safeEqual(a: string, b: string) {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export const authRequired = () => Boolean(process.env.APP_PASSCODE);
+const isProduction = () => process.env.NODE_ENV === "production";
+
+/** "passcode": sign in with APP_PASSCODE. "open": local dev, no passcode. "locked": production with no passcode set. */
+export function authMode(): "passcode" | "open" | "locked" {
+  if (process.env.APP_PASSCODE) return "passcode";
+  return isProduction() ? "locked" : "open";
+}
+
+export const authRequired = () => authMode() !== "open";
 
 export function checkPasscode(passcode: string) {
   const want = process.env.APP_PASSCODE;
-  return !want || safeEqual(passcode, want);
+  if (!want) return authMode() === "open";
+  return safeEqual(passcode, want);
 }
 
 export function newSessionCookie() {
@@ -39,8 +49,9 @@ export function newSessionCookie() {
 }
 
 export function validSession(value: string | undefined | null): boolean {
-  if (!authRequired()) return true;
-  if (!value) return false;
+  const mode = authMode();
+  if (mode === "open") return true;
+  if (mode === "locked" || !value) return false;
   const i = value.lastIndexOf(".");
   if (i < 0) return false;
   const payload = value.slice(0, i);
@@ -60,6 +71,7 @@ function cookieFrom(req: Request) {
 
 /** Dashboard user. Returns the actor recorded on every event. */
 export function requireUser(req: Request): "user:dashboard" {
+  if (authMode() === "locked") throw new AppError("UNAUTHORIZED", "Dashboard is locked: set APP_PASSCODE on the server");
   if (!validSession(cookieFrom(req))) throw new AppError("UNAUTHORIZED", "Sign in first");
   return "user:dashboard";
 }

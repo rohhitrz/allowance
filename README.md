@@ -8,7 +8,7 @@ Allowance is a spending-permission layer for AI agents, built on PayPal. You giv
 
 Built for the [PayPal AI Hackathon 2026](https://developer.paypal.com/community/blog/PayPal_AI_Hackathon). Sandbox only: Allowance acts as the merchant of record, and no real money moves.
 
-> **Status:** in active development (Nov 9–12, 2026). See [PROGRESS.md](PROGRESS.md) for what works today.
+> **Status:** feature-complete for the demo; hardening and deploy in progress (Nov 9–12, 2026). See [PROGRESS.md](PROGRESS.md) for what works today.
 
 ## How it works
 
@@ -37,12 +37,17 @@ flowchart LR
 | Feature | Status |
 | --- | --- |
 | PayPal sandbox client: Vault, authorize, capture, void, refund | Built and verified in sandbox |
-| Mandates from plain language (Claude) | Planned |
-| Policy engine (hard/soft rules) + tests | Planned |
-| Shopping agent (Claude + tools) with prompt-injection demo | Planned |
-| Dashboard, decision receipts, AG Grid ledger | Planned |
-| In-app voice (create mandate, approve/reject, kill switch) | Planned |
-| MCP server | Planned |
+| Mandates from plain language (Claude) | Built |
+| Policy engine (hard/soft rules) + tests | Built |
+| Shopping agent (Claude + tools) with prompt-injection demo | Built |
+| Dashboard, decision receipts, AG Grid ledger, refunds | Built |
+| In-app voice (create mandate, approve/reject, kill switch) | Built with browser speech; Vapi adapter untested |
+| MCP server | Built |
+| Checkout without a saved PayPal account (popup) | Built; not yet rehearsed against the sandbox |
+
+**What the kill switch does and doesn't promise:** it freezes every mandate, blocks all new attempts and voids open holds. A capture already sent to PayPal at that moment can still complete; refund it from its receipt. A capture PayPal reports as pending is shown as pending and re-checked every minute.
+
+**Before sharing a deployed URL, set `APP_PASSCODE`.** In production the dashboard is locked until it is set.
 
 ## Tech
 
@@ -94,7 +99,7 @@ Run the app:
 npm run dev             # http://localhost:3000
 ```
 
-Full setup (database, Claude, voice) will be documented here as each part lands.
+The app also needs Postgres (`DATABASE_URL`, then `npm run db:migrate` and `npm run cli -- reset`) and `ANTHROPIC_API_KEY`; see `.env.example`. Tests: `npm test`.
 
 ## Project structure
 
@@ -102,7 +107,8 @@ Full setup (database, Claude, voice) will be documented here as each part lands.
 docs/            PRD, system design, API design, DB design
 scripts/         paypal-spike.ts (sandbox proof of the payment flow)
 src/app/         Next.js pages and API routes
-src/server/      services: paypal/, and soon policy/, mandates/, transactions/, agent/, voice/, mcp/
+src/components/  dashboard UI
+src/server/      services: paypal/, policy/, mandates/, transactions/, agent/, voice/, mcp/
 PROGRESS.md      what's done, what's next (start here)
 ```
 

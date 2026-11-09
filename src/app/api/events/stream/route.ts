@@ -1,4 +1,4 @@
-import { route } from "@/server/http/handler";
+import { route, intParam } from "@/server/http/handler";
 import { requireUser } from "@/server/http/auth";
 import { bus } from "@/server/events/bus";
 import { listEvents } from "@/server/app";
@@ -10,8 +10,7 @@ import type { EventRow } from "@/server/db/schema";
  */
 export const GET = route(async (req) => {
   requireUser(req);
-  const sinceRaw = req.headers.get("last-event-id") ?? new URL(req.url).searchParams.get("since");
-  const since = sinceRaw ? Number(sinceRaw) : undefined;
+  const since = intParam(req.headers.get("last-event-id") ?? new URL(req.url).searchParams.get("since"), "since");
   const enc = new TextEncoder();
   let cleanup = () => {};
 

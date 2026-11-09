@@ -41,10 +41,8 @@ export async function getPurchaseDto(purchaseId: string) {
 }
 
 export async function listApprovals(status?: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "CANCELLED") {
-  if (status === "PENDING" || !status) {
-    const rows = await pendingApprovals(); // sweeps expired ones first
-    if (status === "PENDING") return rows.map((r) => approvalDto(r.approval, r.purchase));
-  }
+  // A plain read: holds past their expiry are left out; the 60 s sweep voids them.
+  if (status === "PENDING") return (await pendingApprovals()).map((r) => approvalDto(r.approval, r.purchase));
   const rows = await db()
     .select({ a: approvals, p: purchases })
     .from(approvals)

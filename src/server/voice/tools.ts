@@ -65,17 +65,31 @@ export async function runVoiceTool(name: string, rawArgs: unknown, actor: string
       };
     }
     case "get_pending_approval": {
-      const [a] = await listApprovals("PENDING");
-      // The approval id stands in for the token: voice is a human channel behind its own auth.
-      return a ? { approvalId: a.id, prompt: a.prompt } : { none: true, message: "Nothing is waiting for you." };
+      // Oldest first, one at a time: the id returned here is the one the prompt was read for,
+      // and the caller sends it back with the decision. The approval id stands in for the
+      // token: voice is a human channel behind its own auth.
+      const pending = await listApprovals("PENDING");
+      const a = pending.at(-1);
+      return a
+        ? { approvalId: a.id, prompt: a.prompt, pendingCount: pending.length }
+        : { none: true, message: "Nothing is waiting for you." };
     }
     case "decide_approval": {
       let approvalId = args.approvalId as string | undefined;
       const token = args.token as string | undefined;
       if (!approvalId && !token) {
-        const [a] = await listApprovals("PENDING");
-        if (!a) return { status: "NONE", message: "Nothing is waiting for you." };
-        approvalId = a.id;
+        // No id: only safe when exactly one hold is waiting. With several we can't know which
+        // one the user heard, so decide nothing and ask.
+        const pending = await listApprovals("PENDING");
+        if (!pending.length) return { status: "NONE", message: "Nothing is waiting for you." };
+        if (pending.length > 1) {
+          return {
+            status: "AMBIGUOUS",
+            message: `${pending.length} purchases are waiting. I'll read them one at a time; nothing was decided.`,
+            pending: pending.map((a) => ({ approvalId: a.id, prompt: a.prompt })),
+          };
+        }
+        approvalId = pending[0].id;
       }
       const decision = args.decision === "approve" ? "approve" : "reject";
       const ref = approvalId ? { approvalId } : token?.startsWith("apr_") ? { approvalId: token } : { token };
@@ -116,8 +130,8 @@ export const VAPI_TOOL_DEFS = [
   { name: "create_mandate", description: "Turn what the user said into a draft spending mandate. Read the returned summary back word for word and ask them to confirm.", parameters: { type: "object", properties: { text: { type: "string", description: "The user's words" } }, required: ["text"] } },
   { name: "confirm_mandate", description: "Confirm a draft mandate after the user clearly said yes. Starts the shopping agent.", parameters: { type: "object", properties: { mandateId: { type: "string" } }, required: ["mandateId"] } },
   { name: "list_activity", description: "Recent purchase attempts as short sentences.", parameters: { type: "object", properties: { limit: { type: "integer" } } } },
-  { name: "get_pending_approval", description: "The purchase waiting for the user, with the exact prompt to read out.", parameters: { type: "object", properties: {} } },
-  { name: "decide_approval", description: "Send the user's answer. Use decision 'approve' only if they clearly said approve; otherwise 'reject'.", parameters: { type: "object", properties: { approvalId: { type: "string" }, decision: { type: "string", enum: ["approve", "reject"] } }, required: ["decision"] } },
+  { name: "get_pending_approval", description: "The oldest purchase waiting for the user: its approvalId and the exact prompt to read out. Call this before decide_approval.", parameters: { type: "object", properties: {} } },
+  { name: "decide_approval", description: "Send the user's answer for the approvalId whose prompt you just read out. Use decision 'approve' only if they clearly said approve; otherwise 'reject'.", parameters: { type: "object", properties: { approvalId: { type: "string" }, decision: { type: "string", enum: ["approve", "reject"] } }, required: ["approvalId", "decision"] } },
   { name: "freeze_all", description: "Kill switch: freeze every mandate and void open holds. Use when the user says stop.", parameters: { type: "object", properties: {} } },
   { name: "refund", description: "Refund a captured purchase (the latest one if no id).", parameters: { type: "object", properties: { purchaseId: { type: "string" } } } },
 ];

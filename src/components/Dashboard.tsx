@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { api, money } from "./api";
 import { CommandBar, type CommandBarHandle } from "./CommandBar";
 import { Ledger, type LedgerHandle } from "./Ledger";
 import { ApprovalCard, Feed, MandateCard } from "./Panels";
@@ -73,6 +73,13 @@ export function Dashboard() {
     const q = new URLSearchParams(window.location.search);
     if (q.get("vault") === "linked") flash("PayPal linked. Purchases now authorize without a popup.", "info");
     if (q.get("vault") === "error") flash(`PayPal linking failed: ${q.get("message") ?? ""}`);
+    // Back from the PayPal popup checkout (no saved PayPal account): show what happened.
+    const paypal = q.get("paypal");
+    if (paypal === "error") flash(`PayPal checkout failed: ${q.get("message") ?? ""}`);
+    else if (paypal === "cancelled") flash("PayPal checkout cancelled. The reservation was released.", "info");
+    else if (paypal) flash(`PayPal approved. The purchase is now ${paypal}.`, "info");
+    if (q.get("purchase")) setOpenId(q.get("purchase"));
+    if (paypal || q.get("vault")) window.history.replaceState(null, "", "/");
   }, [loadAll, flash]);
 
   // Live updates. Debounce refetches of the small lists; upsert ledger rows individually.
@@ -186,6 +193,8 @@ export function Dashboard() {
   };
 
   const anyActive = mandates.some((m) => m.status === "ACTIVE");
+  // No saved PayPal account: these passed the rules and wait for the buyer to approve in PayPal.
+  const awaitingBuyer = purchases.filter((p) => p.status === "RESERVED" && p.paypal.approveUrl);
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -244,6 +253,22 @@ export function Dashboard() {
           </div>
           {approvals.map((a) => (
             <ApprovalCard key={a.id} a={a} onDecided={() => void loadApprovals()} onError={flash} />
+          ))}
+          {awaitingBuyer.map((p) => (
+            <div key={p.id} className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
+              <div className="text-xs font-semibold uppercase tracking-wider text-indigo-800">Finish in PayPal</div>
+              <p className="mt-1.5 text-[15px] leading-snug text-zinc-900">
+                {p.quantity} × {p.product.name}, {money(p.total.amountCents)} passed your rules. No PayPal account is linked, so PayPal needs your approval for this one.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <a href={p.paypal.approveUrl} className="inline-flex items-center rounded-lg bg-[#003087] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#00256b]">
+                  Approve in PayPal
+                </a>
+                <a href={`/paypal/cancel?purchase=${p.id}`} className="inline-flex items-center rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50">
+                  Cancel
+                </a>
+              </div>
+            </div>
           ))}
           <div>
             <SectionTitle>Mandates</SectionTitle>

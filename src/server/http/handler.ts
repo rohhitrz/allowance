@@ -43,6 +43,17 @@ export async function body<T extends z.ZodType>(req: Request, schema: T): Promis
   return schema.parse(raw);
 }
 
+/** A whole-number query parameter, or undefined if absent. Anything else is a 400, never a 500. */
+export function intParam(raw: string | null, name: string, range: { min?: number; max?: number } = {}): number | undefined {
+  if (raw === null || raw === "") return undefined;
+  const n = Number(raw);
+  const { min = 0, max = Number.MAX_SAFE_INTEGER } = range;
+  if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(n) || n < min || n > max) {
+    throw new AppError("VALIDATION_ERROR", `${name} must be a whole number from ${min} to ${max}`);
+  }
+  return n;
+}
+
 export const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export function demoOnly() {

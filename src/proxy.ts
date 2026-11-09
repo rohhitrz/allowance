@@ -5,7 +5,7 @@ import { SESSION_COOKIE, validSession } from "@/server/http/auth";
 export function proxy(req: NextRequest) {
   if (validSession(req.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
   const login = new URL("/login", req.url);
-  login.searchParams.set("next", req.nextUrl.pathname);
+  login.searchParams.set("next", req.nextUrl.pathname + req.nextUrl.search);
   return NextResponse.redirect(login);
 }
 

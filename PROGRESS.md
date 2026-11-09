@@ -57,7 +57,19 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - **Browser proof** (Nov 10 night, real sandbox): scripted beats from the UI: hold → "reject" typed in the command bar → VOIDED; candle CAPTURED; 5 gift cards BLOCKED (receipt: 4 hard rules, "PayPal never called"); kill switch froze 2 mandates, retry BLOCKED; refund from the receipt drawer → REFUNDED, spend back to $0. Live Claude: typed a housewarming mandate → read-back → "yes" → agent bought a $45 herb garden kit. API: hold → approve → CAPTURED; repeat decision is a no-op. MCP via curl: unauthenticated → 401; tools/list; bought 2 × coffee beans on the grocery mandate → CAPTURED, and it appeared live in the open dashboard.
   - Tests: 70 pass (adds auth tests). `next build` passes.
 
+- [x] **Third review fixes** (Nov 11), 98 tests pass, build passes. Tested with the fake PayPal gateway only; **not yet re-run on the real sandbox or in the browser.**
+  - A failed capture or void now asks PayPal what really happened before acting: a charge whose responses were lost is recorded as CAPTURED with its capture id (refundable); a hold PayPal already voided is recorded as VOIDED.
+  - A reservation stuck mid-authorize (server died) is recovered by re-sending the authorize call with the same request id, then voided, instead of being marked FAILED on a guess.
+  - PENDING captures are re-checked every sweep: COMPLETED clears the flag, DECLINED/FAILED marks the purchase FAILED and frees the budget.
+  - Popup checkout (no saved PayPal): `/paypal/return` and `/paypal/cancel` now exist and finish or release the purchase; the dashboard shows a "Finish in PayPal" card.
+  - Voice never guesses which hold: with several waiting and no id, nothing is decided. "Approve, don't stop" approves and no longer freezes (`src/components/intent.ts`, tested).
+  - Listing approvals no longer makes PayPal calls. Bad `limit`/`since` → 400. One bad Vapi tool call no longer fails the batch.
+  - Production with no `APP_PASSCODE` is locked, not open. Demo "mandate" step twice gives a clear error.
+  - Removed the unused `approval.token` event; humans decide by approval id. Dashboard uses the server's money formatter. README updated.
+  - Not changed: a freeze arriving just before a capture can still let that capture through (documented in the README, not fixed).
+
 ## Next up
+0. Rehearse the full story on the real sandbox in the browser after the review fixes, including the popup checkout with a sandbox buyer.
 
 1. Deploy to Render (web service + Postgres): set `APP_PASSCODE`, `MCP_API_KEY`, `APP_BASE_URL`, `PAYPAL_DEMO_VAULT_ID` (+ email); run `npm run db:migrate` then a demo reset on deploy. Test in a private window.
 2. Voice: decide Vapi vs staying on browser speech. Browser speech works now in Chrome (needs mic permission). If Vapi: create the assistant with `VAPI_TOOL_DEFS`, point it at `/api/voice/tools`, set `VAPI_WEBHOOK_SECRET`.
@@ -87,7 +99,7 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 
 - **Local dev DB**: Docker container `allowance-pg` (Postgres 17) on port 5433. Dev DB `allowance`, test DB `allowance_test`. Start it with `docker start allowance-pg`. Commands: `npm run db:migrate`, `npm run cli -- reset`, `npm test`.
 - **Terminal story proof** (Nov 10, real sandbox): $170 headphones HELD (auth 1V525131XJ023835G) → reject → VOIDED; $89.99 candle set CAPTURED (capture 3AF939117P8366344); 5 × $100 gift cards BLOCKED by 4 hard rules, PayPal never called; kill switch froze 2 mandates and the retry was BLOCKED.
-- **Approval tokens**: only the token's hash is stored. The raw token is emitted on the in-memory bus (`approval.token`) for human channels, never to the agent. Humans on the dashboard/voice can also decide by approval id; `decideApproval` rejects any non-`user:` actor either way.
+- **Approvals**: humans on the dashboard/voice decide by approval id. No raw token is handed out (the hash column is kept for email links, P2); `decideApproval` rejects any non-`user:` actor either way.
 - **No-vault fallback** is wired (`RESERVED` + approve URL, then `completeFallbackAuthorization`) but not tested against the sandbox.
 
 - **Models** (Nov 10): Haiku 5.5 for both the parser and the agent. It's about 1/20th of Sonnet's price ($0.10 / $0.50 per M tokens), and in live runs it parsed mandates correctly and shopped sensibly. Sonnet 5 costs the same as Sonnet 5.5, so if we upgrade it's straight to `claude-sonnet-5-5`.

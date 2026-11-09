@@ -45,6 +45,8 @@ const agentBuys = async (productId: string, quantity: number, reason: string) =>
 export async function runDemoStep(step: DemoStep) {
   switch (step) {
     case "mandate": {
+      const [existing] = await db().select({ id: mandates.id }).from(mandates).where(eq(mandates.id, DEMO_GIFT_MANDATE_ID));
+      if (existing) throw new AppError("INVALID_STATE", "The demo gift mandate already exists. Choose “Reset demo data” first.");
       const { mandate, summary } = await createDraft({
         id: DEMO_GIFT_MANDATE_ID,
         text: GIFT_TEXT,
