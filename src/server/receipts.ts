@@ -1,0 +1,50 @@
+/** Decision receipt = the purchase + the rules it was judged on + every event. */
+import { asc, and, eq } from "drizzle-orm";
+import { db } from "./db";
+import { events, mandateVersions, purchases, type PurchaseRow } from "./db/schema";
+import { AppError } from "./errors";
+import { fmt } from "./money";
+import { failedRules } from "./policy/engine";
+
+export function receiptSummary(p: PurchaseRow): string {
+  const hard = failedRules(p.ruleResults, "hard");
+  const soft = failedRules(p.ruleResults, "soft");
+  const what = `${p.quantity} × ${p.productName} (${fmt(p.totalCents)})`;
+  switch (p.status) {
+    case "BLOCKED":
+      return `Blocked by ${hard.length} hard rule${hard.length === 1 ? "" : "s"}: ${hard.map((r) => r.detail).join("; ")}. PayPal was never called.`;
+    case "HELD":
+      return `Held for your approval: ${soft.map((r) => r.detail).join("; ")}. PayPal authorization ${p.paypalAuthorizationId} is on hold.`;
+    case "CAPTURED":
+      return `Approved ${what}${soft.length ? ` after your approval (${soft.map((r) => r.detail).join("; ")})` : `: passed all ${p.ruleResults.length} rules`}. PayPal captured ${p.paypalCaptureId}.`;
+    case "VOIDED":
+      return `Voided ${what}: ${p.failureReason ?? "authorization released"}. PayPal authorization ${p.paypalAuthorizationId} voided; no money moved.`;
+    case "FAILED":
+      return `PayPal failed for ${what}: ${p.failureReason}. No money moved.`;
+    case "REFUNDED":
+      return `Refunded ${what}. PayPal refund ${p.paypalRefundId}.`;
+    case "RESERVED":
+      return p.paypalApproveUrl
+        ? `Reserved ${what}; waiting for the buyer to approve in PayPal.`
+        : `Reserved ${what}; authorizing with PayPal.`;
+    default:
+      return `${p.status}: ${what}`;
+  }
+}
+
+export async function getReceipt(purchaseId: string) {
+  const [p] = await db().select().from(purchases).where(eq(purchases.id, purchaseId));
+  if (!p) throw new AppError("NOT_FOUND", `Unknown purchase ${purchaseId}`);
+  const [v] = await db()
+    .select()
+    .from(mandateVersions)
+    .where(and(eq(mandateVersions.mandateId, p.mandateId), eq(mandateVersions.version, p.mandateVersion)));
+  const timeline = await db().select().from(events).where(eq(events.purchaseId, p.id)).orderBy(asc(events.id));
+  return {
+    purchase: p,
+    mandateSnapshot: { version: v.version, rules: v.rules },
+    ruleResults: p.ruleResults,
+    timeline,
+    summary: receiptSummary(p),
+  };
+}
