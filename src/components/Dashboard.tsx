@@ -5,6 +5,7 @@ import { CommandBar, type CommandBarHandle } from "./CommandBar";
 import { Ledger, type LedgerHandle } from "./Ledger";
 import { ApprovalCard, Feed, MandateCard } from "./Panels";
 import { ReceiptDrawer } from "./ReceiptDrawer";
+import { RedTeamReport } from "./RedTeamReport";
 import type { Approval, Event, Mandate, Purchase, Run } from "./types";
 import { BrandMark, Button, SectionTitle } from "./ui";
 
@@ -26,6 +27,7 @@ export function Dashboard() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [vault, setVault] = useState<{ linked: boolean; payerEmail?: string } | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [reportRunId, setReportRunId] = useState<string | null>(null);
   const [receiptVersion, setReceiptVersion] = useState(0);
   const [toast, setToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [connected, setConnected] = useState(false);
@@ -124,7 +126,8 @@ export function Dashboard() {
       if (e.type === "approval.created") {
         const prompt = String(e.data.prompt ?? "");
         const id = String(e.data.approvalId ?? "");
-        if (prompt && id) voice.current?.announceApproval({ id, prompt } as Approval);
+        // A red-team probe's hold is released at once; there is nothing for the user to answer.
+        if (prompt && id && e.data.requestedBy !== "agent:redteam") voice.current?.announceApproval({ id, prompt } as Approval);
       }
       // Tell the user how a run ended (only live events, not ones replayed after a reconnect).
       if (e.type === "run.finished" && e.data.summary && Date.now() - new Date(e.at).getTime() < 30_000) {
@@ -322,7 +325,7 @@ export function Dashboard() {
                 </div>
               )}
               {mandates.map((m) => (
-                <MandateCard key={m.id} m={m} run={latestRun[m.id]} onChanged={() => void loadMandates()} onError={flash} />
+                <MandateCard key={m.id} m={m} run={latestRun[m.id]} onChanged={() => void loadMandates()} onError={flash} onReport={setReportRunId} />
               ))}
             </div>
           </div>
@@ -399,6 +402,7 @@ export function Dashboard() {
           {toast.text}
         </div>
       )}
+      <RedTeamReport runId={reportRunId} onClose={() => setReportRunId(null)} onOpenReceipt={setOpenId} />
       <ReceiptDrawer purchaseId={openId} version={receiptVersion} onClose={() => setOpenId(null)} />
     </div>
   );

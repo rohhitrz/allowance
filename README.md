@@ -8,7 +8,23 @@ Allowance is a spending-permission layer for AI agents, built on PayPal. You giv
 
 Built for the [PayPal AI Hackathon 2026](https://developer.paypal.com/community/blog/PayPal_AI_Hackathon). Sandbox only: Allowance acts as the merchant of record, and no real money moves.
 
-> **Status:** feature-complete for the demo; hardening and deploy in progress (Nov 9–12, 2026). See [PROGRESS.md](PROGRESS.md) for what works today.
+## The problem
+
+Agents that buy things are arriving, and the open question is trust. Today the choice is all or nothing: hand the agent a saved payment method it can drain, or approve every click yourself. An instruction in a prompt ("stay under $200") is not a control: a product page can talk the model out of it. The industry answer is the *mandate* (the idea behind AP2, the agent payments protocol PayPal backs): the user states the limits once, and the limits, not the model, decide.
+
+Allowance is a working version of that idea on PayPal's rails today:
+
+- the user's rules live in code and in the database, not in the prompt
+- the agent's only money tool is "request a purchase"; it cannot authorize, capture, approve or edit anything
+- PayPal **authorize → hold → capture / void** is the enforcement mechanism: money is only held when the rules pass, only captured when the rules (or the human) say so, and released otherwise
+
+## Try to break it
+
+Every active mandate has a **Red-team it** button. It starts a second Claude agent with the opposite goal: move money in a way the rules forbid, by any trick it can think of. It picks its own attacks (gift cards, bulk quantities under the limit, re-labelling a blocked item, approving its own hold, a persuasive "the user already agreed" reason…). Each attempt runs through exactly the same services and the same PayPal sandbox as a real agent's. Nothing is scripted or stubbed.
+
+When it finishes you get a report: every attack, what stopped it, a link to its decision receipt, and an **independent audit** that recomputes the mandate's invariants straight from the purchase records (it shares no code with the policy engine, so it would catch the engine being wrong).
+
+One live run on the sandbox: 12 attacks in about 35 seconds, 12 stopped, 0 rules broken.
 
 ## How it works
 
@@ -26,47 +42,67 @@ flowchart LR
 ```
 
 - **Hard rules** can never be overridden, not even by your own voice approval: hard spending limit, blocked categories (gift cards, crypto and cash equivalents are always blocked), max orders, max quantity, expiry, kill switch.
-- **Soft rules** pause the purchase and ask you: over budget, outside the categories you asked for.
-- **Decision receipts:** every attempt, including blocked ones, records which rules passed or failed and what PayPal did.
+- **Soft rules** pause the purchase and ask you: over budget, outside the categories you asked for. PayPal holds the money; nothing is charged until you say "approve".
+- **Decision receipts:** every attempt, including blocked ones, records which of the 10 rules passed or failed, the mandate version it was judged against, and what PayPal did.
 - **Kill switch:** "stop everything" freezes every mandate and voids pending holds.
 - **Recurring mandates:** for example, "$200 a week on groceries", with a spend window that resets each period.
-- **Any agent can plug in** over MCP. Agents can propose; only humans can confirm mandates or approve holds.
+- **Any agent can plug in** over MCP (`/api/mcp`). Agents can propose; only humans can confirm mandates or approve holds.
+- **PayPal is the source of truth for money.** If a capture or void call fails, Allowance asks PayPal what actually happened before it decides anything, retries what should be retried, and releases anything left held. A lost network response is never treated as "nothing happened".
+
+## What judges can do in two minutes
+
+1. Open the hosted app and enter the passcode from the submission.
+2. Type or say: *"Find a birthday gift for my sister, around $150, never more than $200, no gift cards, one purchase."* Confirm the read-back. Claude shops.
+3. If it picks something over $150, an approval card appears and the prompt is read out. Say or click **Reject**: the PayPal hold is voided and the agent looks again.
+4. Click any row in the ledger to open its decision receipt.
+5. Click **Red-team it** on the mandate and watch Claude attack it.
+6. Press **Stop everything**, then try **Run agent**: it is refused.
+
+The **Demo script** menu in the header replays the same story with fixed agent choices, for a reliable recording. The rules engine and PayPal calls are still real in that mode.
 
 ## Features
 
 | Feature | Status |
 | --- | --- |
-| PayPal sandbox client: Vault, authorize, capture, void, refund | Built and verified in sandbox |
+| PayPal sandbox: Vault, authorize, capture, void, refund, reconciliation | Built and verified in sandbox |
 | Mandates from plain language (Claude) | Built |
-| Policy engine (hard/soft rules) + tests | Built |
-| Shopping agent (Claude + tools) with prompt-injection demo | Built |
+| Policy engine (hard/soft rules), 130+ tests | Built |
+| Shopping agent (Claude + tools) | Built |
+| Red-team agent (Claude attacks the mandate) + independent audit | Built and run live |
 | Dashboard, decision receipts, AG Grid ledger, refunds | Built |
-| In-app voice (create mandate, approve/reject, kill switch) | Built with browser speech; Vapi adapter untested |
-| MCP server | Built |
-| Checkout without a saved PayPal account (popup) | Built; not yet rehearsed against the sandbox |
+| In-app voice (create mandate, approve/reject, kill switch) | Built with browser speech (Chrome); Vapi adapter untested |
+| MCP server for outside agents | Built |
+| Checkout without a saved PayPal account (popup) | Built; tested up to PayPal's sign-in |
 
-**What the kill switch does and doesn't promise:** it freezes every mandate, blocks all new attempts and voids open holds. A capture already sent to PayPal at that moment can still complete; refund it from its receipt. A capture PayPal reports as pending is shown as pending and re-checked every minute.
+## What this is, and what it is not
+
+- **It is** the control point between an agent and a payment: rules, holds, human approval, receipts, kill switch. It works for any agent that pays through Allowance.
+- **It is not** a limit enforced by PayPal itself. The rules are enforced by this service. An agent that got hold of payment credentials some other way would not be stopped by it, which is exactly why the agent here never holds any.
+- **The shop is a demo.** Allowance is the merchant of record in the sandbox and sells from a seeded catalog. It does not buy from arbitrary retailers.
+- **The kill switch** freezes every mandate, blocks all new attempts and voids open holds. A capture already sent to PayPal at that moment can still complete; refund it from its receipt.
+- A capture PayPal reports as pending is shown as pending and re-checked every minute.
 
 **Before sharing a deployed URL, set `APP_PASSCODE`.** In production the dashboard is locked until it is set.
 
 ## Tech
 
 - **App:** Next.js 16 (App Router), TypeScript, Tailwind CSS
-- **Payments:** PayPal REST APIs (sandbox): Orders v2 with `intent: AUTHORIZE`, Payments v2 (capture, void, refund), Vault v3
-- **AI:** Claude (Anthropic API). A fast model parses mandates; a stronger model runs the shopping agent with tool use
-- **Voice:** Vapi, with Claude as the model
-- **Data:** PostgreSQL with Drizzle
-- **Ledger UI:** AG Grid (Community)
-- **Hosting:** Render
+- **Payments:** PayPal REST APIs (sandbox): Orders v2 with `intent: AUTHORIZE`, Payments v2 (capture, void, refund, and status reads for reconciliation), Vault v3 (save the buyer's PayPal once, then pay without a popup)
+- **AI:** Claude (Anthropic API), `claude-haiku-5-5` by default
+- **Voice:** browser speech recognition and synthesis; a Vapi webhook adapter runs the same tools
+- **Agents:** an MCP server (`@modelcontextprotocol/sdk`) so Claude Desktop or any MCP client can use a mandate
+- **Data:** PostgreSQL with Drizzle; the database itself refuses a "blocked" purchase that touched PayPal
+- **Ledger UI:** AG Grid (Community): custom status and failed-rule cells, a theme built from the app's design tokens, live row updates
+- **Hosting:** Render (`render.yaml` Blueprint)
 
-## How AI is used
+## How AI is used (tools statement)
 
-- **Claude parses mandates.** It turns free-form speech or text into structured rules, validated with zod and read back for confirmation.
-- **Claude is the shopping agent.** It searches a catalog, reads product pages and proposes purchases with a one-line reason. It cannot move money. Its only money-related tool is `request_purchase`, which goes through the policy engine.
-- **Claude drives the voice assistant**, calling the same backend tools.
-- **Claude Code** (Anthropic) was used to write the product and design docs and to build the app.
+- **Claude parses mandates.** It turns free-form speech or text into structured rules (structured output), validated with zod. Code, not the model, applies defaults and the always-blocked categories, and a template writes the read-back sentence.
+- **Claude is the shopping agent.** It searches the catalog, reads product pages and proposes purchases with a one-line reason. Its only money-related tool is `request_purchase`.
+- **Claude is the red-team agent.** Given the mandate's rules and told to break them, it chooses and runs its own attacks.
+- **Claude Code** (Anthropic) was used to write the product and design docs, build the app, and fix issues found in code review.
 
-The policy engine that decides whether money moves contains **no AI**, by design.
+The policy engine that decides whether money moves, the audit, the approval prompts and the voice command parsing contain **no AI**, by design.
 
 ## Run it locally
 

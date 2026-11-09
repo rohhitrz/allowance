@@ -71,7 +71,7 @@ const PayPalCell = (p: ICellRendererParams<Purchase>) => {
 
 const ActorCell = (p: ICellRendererParams<Purchase>) => {
   const a: string = p.value ?? "";
-  const label = a === "agent:allowance" ? "Allowance agent" : a.startsWith("mcp:") ? `MCP client ${a.slice(4)}` : a.startsWith("user:") ? `You (${a.slice(5)})` : a;
+  const label = a === "agent:allowance" ? "Allowance agent" : a === "agent:redteam" ? "Red-team agent" : a.startsWith("mcp:") ? `MCP client ${a.slice(4)}` : a.startsWith("user:") ? `You (${a.slice(5)})` : a;
   return <span className="text-[13px] text-ink-2">{label}</span>;
 };
 

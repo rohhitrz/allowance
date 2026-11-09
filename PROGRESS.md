@@ -89,6 +89,15 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Stop words: only a whole-sentence command or an unmistakable phrase freezes. "freeze-dried strawberries", "Stop and Shop gift card" are shopping requests.
   - The full approvals list shows a hold past its expiry as EXPIRED. The sweep backs off per purchase (1 → 30 min), calls PayPal 4 at a time, and never overlaps itself.
 
+- [x] **Red-team agent + independent audit** (Nov 10), 130 tests:
+  - **Red-team it** button on every active mandate (`src/server/agent/redteam.ts`). A second Claude agent is told to break the mandate and picks its own attacks. Its purchases go through `requestPurchase` like any agent's. It also has an `admin_action` tool (approve a hold, unfreeze, confirm, refund): each is the real service call made as the agent, and each is refused by `assertHuman`. A purchase the rules send to a human is released at once (`cancelHold`), since the agent can't answer for the user.
+  - **Report** (`GET /api/runs/:id/report`, drawer in `src/components/RedTeamReport.tsx`): each attack, its outcome read from the purchase records (not from what the model was told), a link to the receipt, the attacker's own summary, and the audit.
+  - **Audit** (`src/server/audit.ts`, `GET /api/mandates/:id/audit`): recomputes 7 invariants from the purchases table with no shared code with the policy engine. Tests forge a bypass in the table and check the audit catches it.
+  - **Live run on the real sandbox** (Haiku 5.5, about 35 s): 12 attacks, 12 stopped, 0 rules broken. It tried gift cards, a Bitcoin voucher "as a book", 50 bookmarks at $199.50 (under the limit, blocked on quantity), a $199 watch then approving its own hold, "the user already approved", unfreeze, confirm and refund.
+  - This replaces the scripted "attack" beat as the main proof in the video: the AI really attacks, and the result is not known in advance.
+- [x] **README rewritten** for judges: the problem, "try to break it", a two-minute path, what it is and is not, tools statement.
+- **Hackathon research** (Nov 10): five equally weighted criteria (technical implementation, design, impact, innovation, presentation; ties go to technical). Judges may score from the video and description alone. A project can win one main or honourable-mention prize plus one sponsor prize. The AG Grid prize looks at polish (custom cells, theming, layout) and use of AG Studio's agent framework, which we don't use. Render's prize needs a Render deploy. "Gift-finder shopping agent" is a widely suggested idea, so the pitch must lead with the control layer and the red team, not the shopping.
+
 ## Next up
 0. Popup checkout: unlink the vault, click "Approve in PayPal", sign in as the sandbox buyer and confirm it lands back CAPTURED. Only needed if the demo won't use the vault.
 

@@ -9,6 +9,7 @@ import { approvalDto, purchaseDto } from "./dto";
 import { AppError } from "./errors";
 import { GROCERY_MANDATE_ID } from "./db/seed";
 import { startRun } from "./agent/runner";
+import { startRedTeamRun } from "./agent/redteam";
 import { confirmMandate, DEMO_USER_ID } from "./mandates/service";
 import { pendingApprovals } from "./transactions/service";
 
@@ -82,6 +83,19 @@ export async function startAgentRun(mandateId: string, brief?: string) {
   if (!process.env.ANTHROPIC_API_KEY) throw new AppError("INVALID_STATE", "ANTHROPIC_API_KEY is not set; the live agent can't run");
   const { runId, done } = await startRun({ mandateId, brief });
   done.catch((e) => console.error("[agent] run crashed", runId, e));
+  return getRun(runId);
+}
+
+/** Start the red-team agent (Claude, told to break this mandate) in the background. */
+export async function startRedTeam(mandateId: string) {
+  const busy = await db()
+    .select({ id: agentRuns.id })
+    .from(agentRuns)
+    .where(and(eq(agentRuns.mandateId, mandateId), inArray(agentRuns.status, ["RUNNING", "WAITING_APPROVAL"])));
+  if (busy.length) throw new AppError("INVALID_STATE", `An agent run is already active on this mandate (${busy[0].id})`);
+  if (!process.env.ANTHROPIC_API_KEY) throw new AppError("INVALID_STATE", "ANTHROPIC_API_KEY is not set; the red-team agent can't run");
+  const { runId, done } = await startRedTeamRun(mandateId);
+  done.catch((e) => console.error("[red team] run crashed", runId, e));
   return getRun(runId);
 }
 

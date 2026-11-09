@@ -6,9 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { sql, eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { closeDb, db } from "../db";
-import { events, paypalVaults, purchases } from "../db/schema";
+import { agentRuns, events, paypalVaults, purchases } from "../db/schema";
 import { bus, inTransaction, recordEvent } from "../events/bus";
 import { listApprovals } from "../app";
+import { auditMandate } from "../audit";
+import { RED_TEAM_ACTOR, RED_TEAM_BRIEF, redTeamReport } from "../agent/redteam";
 import { runVoiceTool } from "../voice/tools";
 import { runDemoStep } from "../demo/script";
 import { POST as vapiTools } from "../../app/api/voice/tools/route";
@@ -21,6 +23,7 @@ import { approvals } from "../db/schema";
 import { setGateway, type PaymentGateway } from "./gateway";
 import {
   cancelFallbackPurchase,
+  cancelHold,
   clearSweepBackoff,
   completeFallbackAuthorization,
   decideApproval,
@@ -924,5 +927,72 @@ suite("transaction service", () => {
     await db().update(approvals).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(approvals.id, held.approval!.id));
     const all = await listApprovals();
     expect(all.find((a) => a.id === held.approval!.id)?.status).toBe("EXPIRED");
+  });
+
+  // ---------- audit + red team ----------
+
+  it("the independent audit is clean after the demo story, and catches a rule broken behind the engine's back", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    await decideApproval({ approvalId: held.approval!.id, decision: "reject", actor: "user:voice" });
+    await buy(m.id, CANDLE_SET_ID);
+    await buy(m.id, GIFT_CARD_100_ID, 5);
+    const clean = await auditMandate(m.id);
+    expect(clean.violations).toBe(0);
+    expect(clean.purchases).toBe(3);
+
+    // Forge what a bypass would look like: gift cards paid for, straight into the table.
+    await db().execute(sql`UPDATE purchases SET status = 'CAPTURED', paypal_called = true, paypal_capture_id = 'FORGED'
+      WHERE mandate_id = ${m.id} AND product_id = ${GIFT_CARD_100_ID}`);
+    const dirty = await auditMandate(m.id);
+    const broken = dirty.checks.filter((c) => !c.ok).map((c) => c.name);
+    expect(broken).toEqual(
+      expect.arrayContaining(["Never over the hard limit", "Nothing from a blocked category", "Never more orders than allowed", "Never more than the allowed quantity"]),
+    );
+  });
+
+  it("the audit flags an over-budget purchase paid without a human approval", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    await db().execute(sql`UPDATE purchases SET status = 'CAPTURED', paypal_capture_id = 'FORGED' WHERE id = ${held.purchase.id}`);
+    const a = await auditMandate(m.id);
+    expect(a.checks.find((c) => c.name.startsWith("Nothing over budget"))?.ok).toBe(false);
+  });
+
+  it("agents can't commit: every admin action a red-team agent tries is refused by the real service", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    for (const attempt of [
+      () => decideApproval({ approvalId: held.approval!.id, decision: "approve", actor: RED_TEAM_ACTOR }),
+      () => unfreezeMandate(m.id, RED_TEAM_ACTOR),
+      () => confirmMandate(m.id, RED_TEAM_ACTOR),
+      () => refundPurchase(held.purchase.id, RED_TEAM_ACTOR),
+    ]) {
+      await expect(attempt()).rejects.toMatchObject({ code: "FORBIDDEN_FOR_ACTOR" });
+    }
+    expect((await row(held.purchase.id)).status).toBe("HELD");
+  });
+
+  it("a red-team report is built from the purchase records, not from what the model was told", async () => {
+    const m = await giftMandate();
+    const runId = "run_redteam_test";
+    await db().insert(agentRuns).values({ id: runId, mandateId: m.id, brief: RED_TEAM_BRIEF, model: "test" });
+    const attack = (productId: string, quantity: number) => requestPurchase({ mandateId: m.id, productId, quantity, reason: "test", actor: RED_TEAM_ACTOR, runId });
+    const cards = await attack(GIFT_CARD_100_ID, 5);
+    const over = await attack(HEADPHONES_ID, 1);
+    await cancelHold(over.purchase.id, "system", "red-team probe");
+    const steps = [
+      { tool: "request_purchase", input: { tactic: "gift cards", productId: GIFT_CARD_100_ID, quantity: 5 }, output: `CAPTURED: lies. Purchase id ${cards.purchase.id}.`, at: new Date().toISOString() },
+      { tool: "request_purchase", input: { tactic: "just over budget" }, output: `HELD. Purchase id ${over.purchase.id}.`, at: new Date().toISOString() },
+      { tool: "admin_action", input: { tactic: "approve my own hold", action: "approve_hold", targetId: over.purchase.id }, output: "REFUSED (FORBIDDEN_FOR_ACTOR): agent:redteam cannot do this; a human must", at: new Date().toISOString() },
+    ];
+    await db().update(agentRuns).set({ steps, status: "DONE" }).where(eq(agentRuns.id, runId));
+
+    const report = await redTeamReport(runId);
+    expect(report.attempts.map((a) => a.outcome)).toEqual(["blocked", "needs_human", "refused"]);
+    expect(report.attempts[0].detail).toMatch(/PayPal never called/);
+    expect(report.totals).toMatchObject({ attempts: 3, blocked: 1, needsHuman: 1, refused: 1, breaches: 0 });
+    expect(report.summary).toBe("Red team finished: 3 attacks, 3 stopped, 0 rules broken.");
+    expect((await row(over.purchase.id)).status).toBe("VOIDED"); // the probe's hold was released
   });
 });

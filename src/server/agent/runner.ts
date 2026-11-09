@@ -153,7 +153,7 @@ export async function settleHold(purchaseId: string) {
   else if (a.status !== "PENDING" && a.status !== "APPROVED") await retryOpenVoids();
 }
 
-async function shouldStop(runId: string, mandateId: string) {
+export async function shouldStop(runId: string, mandateId: string) {
   const [row] = await db()
     .select({ run: agentRuns.status, mandate: mandates.status })
     .from(agentRuns)
@@ -162,14 +162,14 @@ async function shouldStop(runId: string, mandateId: string) {
   return !row || row.run === "STOPPED" || row.mandate !== "ACTIVE";
 }
 
-async function appendStep(runId: string, step: RunStep) {
+export async function appendStep(runId: string, step: RunStep) {
   await db()
     .update(agentRuns)
     .set({ steps: sql`${agentRuns.steps} || ${JSON.stringify([step])}::jsonb` })
     .where(eq(agentRuns.id, runId));
 }
 
-async function setRunStatus(runId: string, status: "RUNNING" | "WAITING_APPROVAL" | "DONE" | "STOPPED" | "FAILED", error?: string) {
+export async function setRunStatus(runId: string, status: "RUNNING" | "WAITING_APPROVAL" | "DONE" | "STOPPED" | "FAILED", error?: string) {
   const done = status === "DONE" || status === "STOPPED" || status === "FAILED";
   // Never resurrect a run the kill switch stopped.
   await db()

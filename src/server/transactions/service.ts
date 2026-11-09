@@ -678,7 +678,7 @@ async function createHold(
       type: "approval.created",
       mandateId: p.mandateId,
       purchaseId: p.id,
-      data: { approvalId, prompt, expiresAt: expiresAt.toISOString() },
+      data: { approvalId, prompt, expiresAt: expiresAt.toISOString(), requestedBy: p.requestedBy },
     });
   });
 }
@@ -1017,6 +1017,18 @@ export async function recheckPendingCaptures(): Promise<number> {
 
 /** Everything the 60-second sweep does (src/instrumentation.ts calls sweepExpiredApprovals). */
 export const reconcile = (now = new Date()) => sweepExpiredApprovals(now);
+
+/**
+ * Close one hold without a human decision and release its money (used when the run that
+ * made it ends without anyone to ask, e.g. a red-team probe). Never captures.
+ */
+export async function cancelHold(purchaseId: string, actor: string, reason: string): Promise<PurchaseRow> {
+  await db()
+    .update(approvals)
+    .set({ status: "CANCELLED", decidedBy: actor, decidedAt: new Date() })
+    .where(and(eq(approvals.purchaseId, purchaseId), eq(approvals.status, "PENDING")));
+  return voidPurchase(purchaseId, actor, reason).catch(() => loadPurchase(db(), purchaseId)); // a failed void is retried by the sweep
+}
 
 // ---------- kill switch ----------
 

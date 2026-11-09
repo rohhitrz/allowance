@@ -6,13 +6,40 @@ import { Button, Card, StatusChip, Tag } from "./ui";
 
 // ---------- mandate card ----------
 
-export function MandateCard({ m, run, onChanged, onError }: { m: Mandate; run?: Run; onChanged: () => void; onError: (msg: string) => void }) {
+export function MandateCard({
+  m,
+  run,
+  onChanged,
+  onError,
+  onReport,
+}: {
+  m: Mandate;
+  run?: Run;
+  onChanged: () => void;
+  onError: (msg: string) => void;
+  /** Open the red-team report for a run. */
+  onReport: (runId: string) => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const spent = m.spend.amount.amountCents;
   const limit = m.hardLimitCents;
   const pct = (v: number) => `${Math.min(100, (v / limit) * 100)}%`;
   const over = spent > m.budgetCents;
   const agentBusy = run && (run.status === "RUNNING" || run.status === "WAITING_APPROVAL");
+  const redTeam = run?.brief === "RED TEAM";
+
+  const attack = async () => {
+    setBusy("attack");
+    try {
+      const r = await api<{ run: Run }>(`/api/mandates/${m.id}/red-team`, { body: {} });
+      onReport(r.run.id);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+      onChanged();
+    }
+  };
 
   const act = async (label: string, path: string, body: unknown = {}) => {
     setBusy(label);
@@ -84,13 +111,19 @@ export function MandateCard({ m, run, onChanged, onError }: { m: Mandate; run?: 
       {run && (
         <div className="flex items-center gap-2 border-t border-line-soft bg-sunken px-4 py-2 text-[13px] text-ink-2">
           <span className="relative flex h-2 w-2 shrink-0">
-            {agentBusy && <span className="absolute inset-0 animate-ping rounded-full bg-accent/50" />}
-            <span className={`relative h-2 w-2 rounded-full ${agentBusy ? "bg-accent" : "bg-faint"}`} />
+            {agentBusy && <span className={`absolute inset-0 animate-ping rounded-full ${redTeam ? "bg-blocked/50" : "bg-accent/50"}`} />}
+            <span className={`relative h-2 w-2 rounded-full ${agentBusy ? (redTeam ? "bg-blocked" : "bg-accent") : "bg-faint"}`} />
           </span>
-          <span className="min-w-0 truncate">
-            Agent {run.status === "WAITING_APPROVAL" ? "is waiting for you" : run.status.toLowerCase()}, {run.steps.length} step{run.steps.length === 1 ? "" : "s"}
+          <span className="min-w-0 flex-1 truncate">
+            {redTeam ? (agentBusy ? "Red team is attacking" : "Red team finished") : `Agent ${run.status === "WAITING_APPROVAL" ? "is waiting for you" : run.status.toLowerCase()}`}, {run.steps.length} step
+            {run.steps.length === 1 ? "" : "s"}
             {run.error ? `: ${run.error.slice(0, 60)}` : ""}
           </span>
+          {redTeam && (
+            <button onClick={() => onReport(run.id)} className="shrink-0 text-[13px] font-semibold text-accent hover:underline">
+              View report
+            </button>
+          )}
         </div>
       )}
 
@@ -112,7 +145,10 @@ export function MandateCard({ m, run, onChanged, onError }: { m: Mandate; run?: 
           {m.status === "ACTIVE" && (
             <>
               <Button variant="primary" disabled={!!busy || !!agentBusy} onClick={() => act("run", `/api/mandates/${m.id}/runs`)}>
-                {agentBusy ? "Agent shopping…" : busy === "run" ? "Starting…" : "Run agent"}
+                {agentBusy && !redTeam ? "Agent shopping…" : busy === "run" ? "Starting…" : "Run agent"}
+              </Button>
+              <Button disabled={!!busy || !!agentBusy} onClick={attack} title="Let Claude try to break this mandate's rules. Real checks, real PayPal sandbox.">
+                {agentBusy && redTeam ? "Attacking…" : busy === "attack" ? "Starting…" : "Red-team it"}
               </Button>
               {agentBusy && run && (
                 <Button onClick={() => act("stop", `/api/runs/${run.id}/stop`)}>Stop agent</Button>
@@ -206,7 +242,7 @@ const FEED_TEXT: Record<string, (e: Event) => string> = {
   "mandate.unfrozen": (e) => `Unfrozen (v${e.data.version})`,
   "mandate.cancelled": () => "Mandate cancelled",
   "mandate.expired": () => "Mandate expired",
-  "run.started": () => "Agent started shopping",
+  "run.started": (e) => (e.data.redTeam ? "Red team started attacking this mandate" : "Agent started shopping"),
   "run.step": (e) => stepText(e),
   "run.waiting": () => "Agent is waiting for your approval",
   "run.finished": (e) => (e.data.summary ? String(e.data.summary) : `Agent finished: ${String(e.data.status).toLowerCase()}`),
@@ -229,6 +265,13 @@ const FEED_TEXT: Record<string, (e: Event) => string> = {
 function stepText(e: Event) {
   const tool = String(e.data.tool);
   const input = (e.data.input ?? {}) as Record<string, unknown>;
+  if (e.data.redTeam) {
+    const outcome = String(e.data.output).split(/[:(]/)[0].trim().toLowerCase();
+    if (tool === "request_purchase") return `Red team tried “${input.tactic}”: ${outcome}`;
+    if (tool === "admin_action") return `Red team tried to ${String(input.action).replace(/_/g, " ")}: ${outcome}`;
+    if (tool === "search_catalog") return `Red team searched “${input.query}”`;
+    return `Red team read ${input.productId ?? tool}`;
+  }
   if (tool === "search_catalog") return `Agent searched “${input.query}”`;
   if (tool === "get_product") return `Agent read ${input.productId}`;
   if (tool === "request_purchase") return `Agent: ${String(e.data.output).split(":")[0].toLowerCase()} → ${String(input.reason ?? "")}`;
