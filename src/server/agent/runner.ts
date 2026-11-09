@@ -16,7 +16,7 @@ import { fmt } from "../money";
 import { failedRules } from "../policy/engine";
 import { getProduct, searchCatalog } from "../catalog/service";
 import { getMandate } from "../mandates/service";
-import { requestPurchase, type PurchaseResult } from "../transactions/service";
+import { requestPurchase, retryOpenVoids, sweepExpiredApprovals, type PurchaseResult } from "../transactions/service";
 import { AppError } from "../errors";
 import { getReceipt } from "../receipts";
 
@@ -99,7 +99,7 @@ export function purchaseMessage(r: PurchaseResult): string {
     case "FAILED":
       return `FAILED: payment for ${what} failed (${p.failureReason}). No money moved.`;
     case "HELD":
-      return `HELD: ${what} is waiting for the user (${failedRules(p.ruleResults, "soft").map((x) => x.detail).join(", ")}).`;
+      return `HELD: ${what} is still waiting for the user (${failedRules(p.ruleResults, "soft").map((x) => x.detail).join(", ")}). Don't buy anything else for now.`;
     case "RESERVED":
       return `PENDING: ${what} is waiting for the user to approve the payment in PayPal.`;
     default:
@@ -114,9 +114,21 @@ async function waitForDecision(r: PurchaseResult) {
   for (;;) {
     const [a] = await db().select().from(approvals).where(eq(approvals.id, approvalId));
     if (!a || a.status !== "PENDING") return;
-    if (a.expiresAt < new Date()) return; // the sweep will void it
+    if (a.expiresAt < new Date()) return; // settleHold() below expires and voids it
     await new Promise((res) => setTimeout(res, 1000));
   }
+}
+
+/**
+ * After waiting on a hold, make sure an expired or closed approval actually released the
+ * money before telling the agent anything. Doesn't rely on the server's 60-second sweep,
+ * which isn't running in every process (e.g. the CLI).
+ */
+export async function settleHold(purchaseId: string) {
+  const [a] = await db().select().from(approvals).where(eq(approvals.purchaseId, purchaseId));
+  if (!a) return;
+  if (a.status === "PENDING" && a.expiresAt < new Date()) await sweepExpiredApprovals();
+  else if (a.status !== "PENDING" && a.status !== "APPROVED") await retryOpenVoids();
 }
 
 async function shouldStop(runId: string, mandateId: string) {
@@ -265,6 +277,7 @@ async function executeTool(
       await setRunStatus(ctx.runId, "WAITING_APPROVAL");
       await recordEvent(db(), { actor: ACTOR, type: "run.waiting", mandateId: ctx.mandateId, purchaseId: r.purchase.id, data: { runId: ctx.runId } });
       await (ctx.hooks.onHold ?? waitForDecision)(r);
+      await settleHold(r.purchase.id);
       await setRunStatus(ctx.runId, "RUNNING");
       const receipt = await getReceipt(r.purchase.id);
       r = { purchase: receipt.purchase };

@@ -16,6 +16,9 @@ export function receiptSummary(p: PurchaseRow): string {
     case "HELD":
       return `Held for your approval: ${soft.map((r) => r.detail).join("; ")}. PayPal authorization ${p.paypalAuthorizationId} is on hold.`;
     case "CAPTURED":
+      if (p.failureReason?.startsWith("capture PENDING")) {
+        return `Approved ${what}. PayPal capture ${p.paypalCaptureId} is still PENDING and can still be declined.`;
+      }
       return `Approved ${what}${soft.length ? ` after your approval (${soft.map((r) => r.detail).join("; ")})` : `: passed all ${p.ruleResults.length} rules`}. PayPal captured ${p.paypalCaptureId}.`;
     case "VOIDED":
       return `Voided ${what}: ${p.failureReason ?? "authorization released"}. PayPal authorization ${p.paypalAuthorizationId} voided; no money moved.`;

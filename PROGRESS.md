@@ -39,6 +39,12 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Both re-checks (auto-approve and human approve) run the full policy engine with the mandate row locked.
   - AGENTS.md now scopes the PayPal-writes rule to app code; `scripts/paypal-spike.ts` is the labelled exception.
   - Known small window: a freeze landing between the auto-approve re-check and the capture call can still capture that one purchase.
+- [x] **Second review (Cursor) fixes** (Nov 10, 67 tests):
+  - Capture status is checked: only COMPLETED (or PENDING, flagged on the receipt) counts; DECLINED/FAILED are voided and marked FAILED. The real sandbox returns COMPLETED.
+  - The agent settles a hold itself after waiting (expired → voided), so the CLI doesn't depend on the server's 60-second sweep.
+  - Repeating a decision finishes a void PayPal didn't confirm the first time.
+  - `npm run cli -- story` is fully scripted (fixed mandate) even with a Claude key; `--claude` opts in to live parsing. Beat 4 is labelled an attack test: a compromised agent, not a live model exploit.
+  - Heads-up: the Stage 3 session shares the dev and test databases; run the story and tests when it isn't using them.
 
 ## Next up
 

@@ -11,6 +11,8 @@ import { bus, inTransaction, recordEvent } from "../events/bus";
 import { CANDLE_SET_ID, GIFT_CARD_100_ID, HEADPHONES_ID, resetDemo } from "../db/seed";
 import { confirmMandate, createDraft, unfreezeMandate } from "../mandates/service";
 import { getReceipt } from "../receipts";
+import { settleHold } from "../agent/runner";
+import { approvals } from "../db/schema";
 import { setGateway, type PaymentGateway } from "./gateway";
 import {
   cancelFallbackPurchase,
@@ -428,5 +430,67 @@ suite("transaction service", () => {
     } finally {
       setGateway(fake);
     }
+  });
+
+  // ---------- second review (Cursor) ----------
+
+  it.each(["DECLINED", "FAILED"])("a capture PayPal reports as %s is voided and marked FAILED, not CAPTURED", async (st) => {
+    const m = await giftMandate();
+    setGateway({
+      ...fake,
+      async captureAuthorization(args) {
+        calls.push({ op: "capture", args });
+        return { captureId: "CAP_BAD", status: st };
+      },
+    });
+    try {
+      const r = await buy(m.id, CANDLE_SET_ID);
+      expect(r.purchase.status).toBe("FAILED");
+      expect(r.purchase.failureReason).toBe(`PayPal capture CAP_BAD was ${st}`);
+      expect(ops()).toEqual(["authorize", "capture", "void"]);
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("a PENDING capture is recorded as captured and flagged on the receipt", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, captureAuthorization: async () => ({ captureId: "CAP_PEND", status: "PENDING" }) });
+    try {
+      const r = await buy(m.id, CANDLE_SET_ID);
+      expect(r.purchase.status).toBe("CAPTURED");
+      expect((await getReceipt(r.purchase.id)).summary).toMatch(/still PENDING/);
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("when the agent stops waiting on an expired hold, the hold is released without the server sweep", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    await db().update(approvals).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(approvals.id, held.approval!.id));
+    await settleHold(held.purchase.id);
+    const [p] = await db().select().from(purchases).where(eq(purchases.id, held.purchase.id));
+    const [a] = await db().select().from(approvals).where(eq(approvals.id, held.approval!.id));
+    expect(a.status).toBe("EXPIRED");
+    expect(p.status).toBe("VOIDED");
+  });
+
+  it("a decision whose void failed is finished by the next settle, not skipped", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    setGateway({ ...fake, voidAuthorization: async () => Promise.reject(new Error("PayPal 503")) });
+    try {
+      const d = await decideApproval({ approvalId: held.approval!.id, decision: "reject", actor: "user:voice" });
+      expect(d.purchase.status).toBe("HELD"); // still held: PayPal didn't confirm the void
+      const again = await decideApproval({ approvalId: held.approval!.id, decision: "reject", actor: "user:voice" });
+      expect(again.alreadyDecided).toBe(true);
+    } finally {
+      setGateway(fake);
+    }
+    // PayPal is back: repeating the decision finishes the void.
+    const third = await decideApproval({ approvalId: held.approval!.id, decision: "reject", actor: "user:voice" });
+    expect(third.alreadyDecided).toBe(true);
+    expect(third.purchase.status).toBe("VOIDED");
   });
 });

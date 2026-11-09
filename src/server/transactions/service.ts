@@ -383,6 +383,12 @@ async function capture(purchaseId: string, actor: string) {
     r = await gateway()
       .captureAuthorization({ authorizationId, requestId: `${p.id}:capture` })
       .catch(() => gateway().captureAuthorization({ authorizationId, requestId: `${p.id}:capture` }));
+    // A 2xx isn't enough: PayPal reports the capture's own status.
+    //   COMPLETED -> money moved.  PENDING -> committed but not settled (e.g. review); recorded, flagged.
+    //   DECLINED / FAILED / anything else -> no money moved; treated like a refused capture.
+    if (r.status !== "COMPLETED" && r.status !== "PENDING") {
+      throw new Error(`PayPal capture ${r.captureId} was ${r.status}`);
+    }
   } catch (e) {
     // PayPal refused the capture. Don't leave money authorized: void, then mark FAILED.
     const f = paypalFailure(e);
@@ -402,9 +408,10 @@ async function capture(purchaseId: string, actor: string) {
 
   // Step 2: money has moved. Record it, whatever it takes. Never mark this purchase FAILED.
   await persistently(async () => {
+    const note = r.status === "PENDING" ? "capture PENDING at PayPal; it can still be declined" : null;
     const row = await transition(db(), p.id, ["AUTHORIZED", "HELD"], "CAPTURED", {
       paypalCaptureId: r.captureId,
-      failureReason: null,
+      failureReason: note,
     });
     if (!row) {
       // Someone moved the row meanwhile, but PayPal is the truth: it's captured.
@@ -595,6 +602,10 @@ export async function decideApproval(args: {
   });
 
   let note: string | undefined;
+  if (plan.kind === "already" && plan.a.status in CLOSED_APPROVAL_REASON) {
+    // Repeating a decision finishes a void that PayPal didn't confirm the first time.
+    await voidPurchase(plan.a.purchaseId, "system", CLOSED_APPROVAL_REASON[plan.a.status]).catch(() => {});
+  }
   if (plan.kind === "capture") await capture(plan.a.purchaseId, args.actor);
   if (plan.kind === "void") {
     note = plan.reason;

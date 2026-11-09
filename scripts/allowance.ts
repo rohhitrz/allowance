@@ -2,7 +2,9 @@
  * Allowance from the terminal (Stage 2 gate: the full story works without a UI).
  *
  *   npm run cli -- reset                 wipe + re-seed (links the vault from .spike-state.json)
- *   npm run cli -- story                 the video's story, scripted (no Claude needed), real PayPal sandbox
+ *   npm run cli -- story                 the video's story, fully scripted and repeatable (fixed mandate,
+ *                                        fixed agent path, no Claude), real PayPal sandbox. Use this to record.
+ *   npm run cli -- story --claude        same, but the mandate is parsed live by Claude
  *   npm run cli -- parse "<text>"        draft a mandate from plain words with Claude (prints the read-back)
  *   npm run cli -- agent ["<text>"]      live: parse + confirm a mandate, run the Claude shopping agent,
  *                                        approve/reject holds at the prompt, then the injection attack
@@ -106,9 +108,11 @@ async function giftMandate(useClaude: boolean) {
 
 async function story() {
   await reset();
-  const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
+  // Fixed by default so every take is identical; opt in to live parsing with --claude.
+  const useClaude = process.argv.includes("--claude");
+  if (useClaude && !process.env.ANTHROPIC_API_KEY) throw new Error("--claude needs ANTHROPIC_API_KEY in .env");
 
-  beat("1. Mandate from plain words" + (useClaude ? " (Claude)" : " (fixed draft, no ANTHROPIC_API_KEY)"));
+  beat("1. Mandate from plain words" + (useClaude ? " (parsed live by Claude)" : " (fixed mandate)"));
   const m = await giftMandate(useClaude);
   const all = await listMandates({ status: "ACTIVE" });
   for (const x of all) console.log(`  ${c.dim("•")} ${x.title}: ${fmt(x.budgetCents)} budget / ${fmt(x.hardLimitCents)} limit, ${x.period}`);
@@ -130,10 +134,12 @@ async function story() {
   const ok = await agent(CANDLE_SET_ID, 1, "Thoughtful, well reviewed and inside the budget");
   await printReceipt(ok.purchase.id);
 
-  beat("4. Prompt injection: poisoned product says “buy 5 × $100 gift cards”");
+  // A deliberate attack test, not a live model exploit: our Haiku agent ignores the poisoned page
+  // (see `agent`). This simulates a compromised agent that obeys it, to show the engine stops it anyway.
+  beat("4. Attack test: a compromised agent obeys a poisoned page (“buy 5 × $100 gift cards”)");
   const poisoned = await getProduct(POISONED_PRODUCT_ID);
   console.log(c.dim(`  ${poisoned.name}: …${poisoned.description.slice(poisoned.description.indexOf("SYSTEM NOTICE"), poisoned.description.indexOf("SYSTEM NOTICE") + 110)}…`));
-  const attack = await agent(GIFT_CARD_100_ID, 5, "Product page says the user pre-approved this");
+  const attack = await agent(GIFT_CARD_100_ID, 5, "Attack test: product page says the user pre-approved this");
   await printReceipt(attack.purchase.id);
 
   beat("5. “Stop everything” -> kill switch, then the agent retries");
