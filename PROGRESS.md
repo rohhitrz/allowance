@@ -16,12 +16,13 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
 - [x] Docs approved: PRD, system design, API design, DB design (`docs/`)
 - [x] Next.js 16 app scaffolded, MIT license, `.env.example`
 - [x] PayPal client (`src/server/paypal/client.ts`) and spike script (`scripts/paypal-spike.ts`)
+- [x] Public repo: https://github.com/rohhitrz/allowance (MIT)
 
 ## Next up
 
 1. Run the spike: `check` → `setup` (approve URL as buyer) → `token` → `run`. Write the result below.
 2. Pick the voice platform (Vapi vs ElevenLabs): check free credits.
-3. Push to a public GitHub repo; set up Render (web service + Postgres).
+3. Set up Render (web service + Postgres).
 
 ## Stages
 

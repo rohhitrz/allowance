@@ -68,8 +68,8 @@ The policy engine that decides whether money moves contains **no AI**, by design
 Requirements: Node 22+, a [PayPal developer](https://developer.paypal.com) sandbox app (with Vault enabled), and a sandbox personal (buyer) account.
 
 ```bash
-git clone <this repo>
-cd paypal-hackathon
+git clone https://github.com/rohhitrz/allowance.git
+cd allowance
 npm install
 cp .env.example .env    # fill in PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET
 ```
