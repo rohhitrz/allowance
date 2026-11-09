@@ -101,6 +101,10 @@ npm run dev             # http://localhost:3000
 
 The app also needs Postgres (`DATABASE_URL`, then `npm run db:migrate` and `npm run cli -- reset`) and `ANTHROPIC_API_KEY`; see `.env.example`. Tests: `npm test`.
 
+## Deploy (Render)
+
+`render.yaml` is a Render Blueprint: one web service and one Postgres. In Render: **New → Blueprint**, pick this repo, then fill in the secrets it asks for (PayPal keys, `ANTHROPIC_API_KEY`, `APP_PASSCODE`, and `PAYPAL_DEMO_VAULT_ID` / `PAYPAL_DEMO_PAYER_EMAIL` for the sandbox buyer you vaulted with the spike). On every boot, `npm run start:render` applies migrations and seeds the catalog (it never wipes data), then starts Next.js. Keep it to one instance: live updates are in memory.
+
 ## Project structure
 
 ```

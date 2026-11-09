@@ -1,4 +1,5 @@
 /** Link the buyer's PayPal once (Vault v3), so later authorizations need no popup. */
+import { appBaseUrl } from "../base-url";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { paypalVaults } from "../db/schema";
@@ -8,7 +9,7 @@ import { id } from "../ids";
 import { DEMO_USER_ID } from "../mandates/service";
 import { createVaultPaymentToken, createVaultSetupToken, PayPalError } from "./client";
 
-const base = () => process.env.APP_BASE_URL ?? "http://localhost:3000";
+const base = () => appBaseUrl();
 
 export async function startVaultSetup(actor: string, userId = DEMO_USER_ID) {
   assertHuman(actor);

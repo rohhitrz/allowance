@@ -16,6 +16,7 @@
  *   - when a capture or void call fails, we ask PayPal what the authorization's state really is
  *     (settleFromPayPal) before deciding anything: a lost response is not a refusal
  */
+import { appBaseUrl } from "../base-url";
 import { and, eq, gt, inArray, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
 import { db, type Conn } from "../db";
 import { agentRuns, approvals, mandates, paypalVaults, products, purchases, type PurchaseRow } from "../db/schema";
@@ -239,7 +240,7 @@ async function authorize(p: PurchaseRow, userId: string): Promise<AuthorizeOutco
     if (!vault?.paymentTokenId) {
       // No-vault fallback: the buyer approves in a popup, then completeFallbackAuthorization() runs.
       // If they never do, reconcile() releases the reservation after POPUP_TTL_MS.
-      const base = process.env.APP_BASE_URL ?? "http://localhost:3000";
+      const base = appBaseUrl();
       const o = await gateway().createOrderForApproval({
         amountCents: p.totalCents,
         description: p.productName,

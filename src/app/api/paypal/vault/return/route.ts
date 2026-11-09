@@ -1,10 +1,11 @@
+import { appBaseUrl } from "@/server/base-url";
 import { requireUser } from "@/server/http/auth";
 import { finishVaultSetup } from "@/server/paypal/vault";
 
 /** PayPal sends the buyer back here after they approve saving their PayPal account. */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const home = new URL("/", process.env.APP_BASE_URL ?? url.origin);
+  const home = new URL("/", appBaseUrl(url.origin));
   try {
     requireUser(req);
     const setupToken = url.searchParams.get("approval_token_id");

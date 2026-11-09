@@ -3,6 +3,7 @@
  * Agents propose; they can draft mandates and request purchases, never confirm or approve.
  * Stateless: one server + transport per HTTP request.
  */
+import { appBaseUrl } from "../base-url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { eq } from "drizzle-orm";
@@ -51,7 +52,7 @@ function wrap<A>(fn: (args: A) => Promise<ReturnType<typeof text>>) {
 
 export function buildMcpServer(client: Client) {
   const server = new McpServer({ name: "allowance", version: "0.1.0" });
-  const base = process.env.APP_BASE_URL ?? "http://localhost:3000";
+  const base = appBaseUrl();
 
   server.registerTool(
     "create_mandate",

@@ -1,0 +1,51 @@
+# Render Blueprint: one Next.js web service + one Postgres.
+# Render dashboard → New → Blueprint → pick this repo. Fill the "sync: false" values when asked.
+# The app keeps live updates in memory and runs a 60 s sweep, so it must stay ONE instance.
+services:
+  - type: web
+    name: allowance
+    runtime: node
+    plan: free # free sleeps after 15 min idle (~1 min cold start); "starter" stays awake
+    region: oregon
+    buildCommand: npm ci && npm run build
+    # Free plans have no pre-deploy hook, so migrations + seed run at boot (idempotent, never wipes).
+    startCommand: npm run start:render
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: allowance-db
+          property: connectionString
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      # The sandbox buyer already vaulted locally (.spike-state.json), so the demo needs no popup.
+      - key: PAYPAL_DEMO_VAULT_ID
+        sync: false
+      - key: PAYPAL_DEMO_PAYER_EMAIL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Dashboard passcode: share it with judges in the submission. Production without it is locked.
+      - key: APP_PASSCODE
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: MCP_API_KEY
+        generateValue: true
+      - key: DEMO_MODE
+        value: "true"
+      # APP_BASE_URL is optional: RENDER_EXTERNAL_URL is used when it's unset.
+
+databases:
+  - name: allowance-db
+    plan: free # free Postgres expires 30 days after creation; upgrade before judging ends if needed
+    region: oregon
+    databaseName: allowance
+    user: allowance

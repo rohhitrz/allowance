@@ -1,10 +1,11 @@
+import { appBaseUrl } from "@/server/base-url";
 import { requireUser } from "@/server/http/auth";
 import { cancelFallbackPurchase } from "@/server/transactions/service";
 
 /** No-vault checkout: the buyer cancelled in PayPal. Release the reservation right away. */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const home = new URL("/", process.env.APP_BASE_URL ?? url.origin);
+  const home = new URL("/", appBaseUrl(url.origin));
   const purchaseId = url.searchParams.get("purchase") ?? "";
   if (purchaseId) home.searchParams.set("purchase", purchaseId);
   try {

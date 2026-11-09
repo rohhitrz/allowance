@@ -11,7 +11,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "cli": "tsx scripts/allowance.ts"
+    "cli": "tsx scripts/allowance.ts",
+    "start:render": "tsx scripts/deploy.ts && next start"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
@@ -37,5 +38,8 @@
     "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
