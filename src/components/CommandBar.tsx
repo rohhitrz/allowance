@@ -229,50 +229,61 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
   };
 
   return (
-    <div>
+    <div className="rounded-2xl border border-line bg-surface p-2 shadow-[0_1px_2px_rgba(12,27,51,0.04)] focus-within:border-[#b9c6e8] focus-within:ring-4 focus-within:ring-accent/10">
       <form onSubmit={submit} className="flex items-stretch gap-2">
         <button
           type="button"
           onClick={toggleMic}
           disabled={!supported || busy}
           title={supported ? (listening ? "Tap to send" : "Tap to talk") : "Speech recognition isn't available in this browser; type instead"}
-          className={`relative flex w-12 shrink-0 items-center justify-center rounded-xl text-white transition-colors disabled:cursor-not-allowed disabled:bg-zinc-300 ${
-            listening ? "bg-red-600" : "bg-zinc-900 hover:bg-zinc-700"
+          className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-white transition-colors disabled:cursor-not-allowed disabled:bg-faint ${
+            listening ? "bg-blocked" : "bg-ink hover:bg-[#1b2c4a]"
           }`}
           aria-label={listening ? "Stop listening and send" : "Tap to talk"}
         >
-          {listening && <span className="absolute inset-0 animate-ping rounded-xl bg-red-500/40" />}
+          {listening && <span className="absolute inset-0 animate-ping rounded-xl bg-blocked/40" />}
           <svg viewBox="0 0 24 24" className="relative h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <rect x="9" y="3" width="6" height="11" rx="3" />
             <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
           </svg>
         </button>
-        <input
-          value={listening ? interim : text}
-          onChange={(e) => setText(e.target.value)}
-          readOnly={listening}
-          placeholder={listening ? "Listening… tap the mic when you're done" : "“Find a birthday gift for my sister, around $150, never more than $200…”"}
-          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10"
-        />
-        <Button type="submit" variant="primary" disabled={busy || listening || !text.trim()} className="rounded-xl px-4">
-          {busy ? "…" : "Send"}
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">Tell Allowance what to do</span>
+          <input
+            value={listening ? interim : text}
+            onChange={(e) => setText(e.target.value)}
+            readOnly={listening}
+            placeholder={listening ? "Listening… tap the mic when you're done" : "Find a birthday gift for my sister, around $150"}
+            className="h-11 w-full bg-transparent px-1.5 text-[15px] text-ink outline-none placeholder:text-faint"
+          />
+        </label>
+        <Button type="submit" variant="primary" disabled={busy || listening || !text.trim()} className="h-11 rounded-xl px-4">
+          {busy ? "Working…" : "Send"}
         </Button>
       </form>
-      <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
-        <span>Say a mandate, “approve”, “reject”, “what happened?”, “return it” or “stop everything”.</span>
-        <label className="flex cursor-pointer items-center gap-1.5">
-          <input type="checkbox" checked={speakReplies} onChange={(e) => setSpeakReplies(e.target.checked)} className="accent-zinc-900" />
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1.5 pb-1 pt-2 text-[12.5px] text-muted">
+        <span>Try “approve”, “reject”, “what happened?”, “return it” or “stop everything”.</span>
+        <label className="flex cursor-pointer select-none items-center gap-1.5 text-ink-2">
+          <input type="checkbox" checked={speakReplies} onChange={(e) => setSpeakReplies(e.target.checked)} className="h-3.5 w-3.5 accent-[#0c1b33]" />
           Speak replies
         </label>
       </div>
       {log.length > 0 && (
-        <div className="mt-3 space-y-1.5 rounded-xl bg-zinc-50 px-3 py-2.5 text-sm">
-          {log.map((l, i) => (
-            <div key={i} className={l.who === "you" ? "text-zinc-500" : "text-zinc-900"}>
-              <span className="mr-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400">{l.who}</span>
-              {l.text}
-            </div>
-          ))}
+        <div className="mt-1 space-y-2 border-t border-line-soft px-1.5 pb-1 pt-3" aria-live="polite">
+          {log.map((l, i) =>
+            l.who === "you" ? (
+              <div key={i} className="flex justify-end">
+                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-neutral-bg px-3 py-1.5 text-[14px] leading-snug text-ink-2">{l.text}</div>
+              </div>
+            ) : (
+              <div key={i} className="flex gap-2">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-ink text-[10px] font-bold text-white" aria-label="Allowance">
+                  A
+                </span>
+                <div className="max-w-[90%] text-[14px] leading-snug text-ink">{l.text}</div>
+              </div>
+            ),
+          )}
         </div>
       )}
     </div>

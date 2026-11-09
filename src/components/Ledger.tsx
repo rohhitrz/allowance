@@ -21,19 +21,28 @@ import { RulePill, StatusChip } from "./ui";
 ModuleRegistry.registerModules([AllCommunityModule]);
 
 const theme = themeQuartz.withParams({
-  fontFamily: "var(--font-geist-sans)",
-  fontSize: 13,
-  headerFontSize: 12,
+  fontFamily: "var(--font-public-sans), system-ui, sans-serif",
+  headerFontFamily: "var(--font-public-sans), system-ui, sans-serif",
+  fontSize: 13.5,
+  headerFontSize: 12.5,
   headerFontWeight: 600,
-  headerTextColor: "#52525b",
-  headerBackgroundColor: "#fafafa",
-  borderColor: "#e4e4e7",
-  rowBorder: { color: "#f4f4f5" },
-  wrapperBorderRadius: 12,
-  accentColor: "#18181b",
-  rowHoverColor: "#f8fafc",
-  selectedRowBackgroundColor: "#eef2ff",
-  spacing: 6,
+  foregroundColor: "#0c1b33",
+  textColor: "#0c1b33",
+  headerTextColor: "#66738a",
+  headerBackgroundColor: "#f6f8fa",
+  backgroundColor: "#ffffff",
+  borderColor: "#dde2ea",
+  rowBorder: { color: "#eaedf2" },
+  columnBorder: false,
+  headerColumnBorder: false,
+  wrapperBorderRadius: 16,
+  accentColor: "#1f4fd6",
+  rowHoverColor: "#f6f8fa",
+  selectedRowBackgroundColor: "#ebeffd",
+  iconSize: 14,
+  spacing: 7,
+  rowHeight: 46,
+  headerHeight: 40,
 });
 
 export type LedgerHandle = { upsert: (p: Purchase) => void; setRows: (rows: Purchase[]) => void };
@@ -42,7 +51,7 @@ const StatusCell = (p: ICellRendererParams<Purchase>) => (p.value ? <StatusChip 
 
 const FailedCell = (p: ICellRendererParams<Purchase>) => {
   const rules = p.data?.failedRules ?? [];
-  if (!rules.length) return <span className="text-xs text-emerald-700">all {p.data?.ruleResults.length ?? 10} passed</span>;
+  if (!rules.length) return <span className="text-[13px] text-paid">All {p.data?.ruleResults.length ?? 10} passed</span>;
   return (
     <div className="flex flex-wrap items-center gap-1 py-1.5 leading-none">
       {rules.map((r) => (
@@ -55,15 +64,15 @@ const FailedCell = (p: ICellRendererParams<Purchase>) => {
 const PayPalCell = (p: ICellRendererParams<Purchase>) => {
   const pp = p.data?.paypal;
   if (!pp) return null;
-  if (!pp.called) return <span className="text-xs font-medium text-red-700">never called</span>;
+  if (!pp.called) return <span className="text-[13px] font-medium text-blocked">Never called</span>;
   const id = pp.refundId ? `refund ${pp.refundId}` : pp.captureId ? `capture ${pp.captureId}` : pp.authorizationId ? `auth ${pp.authorizationId}` : pp.orderId ? `order ${pp.orderId}` : "called";
-  return <span className="font-mono text-[11px] text-zinc-600">{id}</span>;
+  return <span className="font-mono text-[12px] text-ink-2">{id}</span>;
 };
 
 const ActorCell = (p: ICellRendererParams<Purchase>) => {
   const a: string = p.value ?? "";
-  const label = a === "agent:allowance" ? "Allowance agent" : a.startsWith("mcp:") ? `MCP · ${a.slice(4)}` : a.replace("user:", "you · ");
-  return <span className="text-xs text-zinc-600">{label}</span>;
+  const label = a === "agent:allowance" ? "Allowance agent" : a.startsWith("mcp:") ? `MCP client ${a.slice(4)}` : a.startsWith("user:") ? `You (${a.slice(5)})` : a;
+  return <span className="text-[13px] text-ink-2">{label}</span>;
 };
 
 export const Ledger = forwardRef<LedgerHandle, { rows: Purchase[]; mandates: Mandate[]; onOpen: (p: Purchase) => void; quickFilter: string }>(
@@ -97,7 +106,7 @@ export const Ledger = forwardRef<LedgerHandle, { rows: Purchase[]; mandates: Man
           minWidth: 200,
           cellClass: "font-medium",
         },
-        { headerName: "Category", valueGetter: (p) => p.data?.product.category, width: 120, cellClass: "font-mono text-xs" },
+        { headerName: "Category", valueGetter: (p) => p.data?.product.category, width: 120, valueFormatter: (p) => (p.value ? String(p.value).replace(/_/g, " ") : ""), cellClass: "text-ink-2 capitalize" },
         {
           headerName: "Amount",
           valueGetter: (p) => p.data?.total.amountCents,
@@ -105,7 +114,7 @@ export const Ledger = forwardRef<LedgerHandle, { rows: Purchase[]; mandates: Man
           width: 110,
           type: "rightAligned",
           filter: "agNumberColumnFilter",
-          cellClass: "tabular-nums",
+          cellClass: "num font-semibold",
         },
         { headerName: "Mandate", valueGetter: (p) => (p.data ? (titles[p.data.mandateId] ?? p.data.mandateId) : ""), flex: 1, minWidth: 150 },
         { headerName: "Requested by", field: "requestedBy", width: 140, cellRenderer: ActorCell },
@@ -134,10 +143,10 @@ export const Ledger = forwardRef<LedgerHandle, { rows: Purchase[]; mandates: Man
           getRowId={(p: GetRowIdParams<Purchase>) => p.data.id}
           onRowClicked={(e) => e.data && onOpen(e.data)}
           rowClass="cursor-pointer"
-          getRowStyle={(p: RowClassParams<Purchase>) => (p.data?.status === "BLOCKED" ? { background: "#fff7f7" } : undefined)}
+          getRowStyle={(p: RowClassParams<Purchase>) => (p.data?.status === "BLOCKED" ? { background: "#fffafa" } : undefined)}
           quickFilterText={quickFilter}
           animateRows
-          overlayNoRowsTemplate="<span style='color:#71717a'>No purchase attempts yet. Create a mandate and let the agent shop.</span>"
+          overlayNoRowsTemplate="<span style='color:#66738a;font-size:14px'>No purchase attempts yet. Create a mandate and run the agent.</span>"
         />
       </div>
     );

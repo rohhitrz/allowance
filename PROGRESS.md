@@ -77,6 +77,8 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Mic listens continuously: it no longer cuts off at the first pause. It sends after 3.5 s of silence, or when you tap the mic again (60 s max).
   - When the agent stops, it says how it ended in one templated sentence (bought X, or "nothing fits your rules (at most $X in …)"), shown in the feed and spoken.
 
+- [x] **UI polish** (Nov 11): new look across the dashboard, receipt drawer and login. Navy ink on a cool grey canvas; fonts are Bricolage Grotesque (titles, money), Public Sans (body) and IBM Plex Mono (ids and rule names only). Sentence-case labels instead of all caps; statuses read "Paid / Held / Blocked / Frozen". Mandate cards show a spend meter (track ends at the hard limit, tick at the budget). Approval card has a draining countdown bar. Chat-style replies in the command bar. Login is a two-panel page. Header fits on phones. Design tokens live in `src/app/globals.css`.
+
 ## Next up
 0. Popup checkout: unlink the vault, click "Approve in PayPal", sign in as the sandbox buyer and confirm it lands back CAPTURED. Only needed if the demo won't use the vault.
 

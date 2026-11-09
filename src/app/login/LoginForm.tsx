@@ -16,18 +16,21 @@ export function LoginForm() {
     window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
   };
   return (
-    <form onSubmit={submit} className="mt-5 space-y-3">
+    <form onSubmit={submit} className="mt-7 space-y-3">
+      <label htmlFor="passcode" className="block text-[14px] font-semibold text-ink">
+        Passcode
+      </label>
       <input
+        id="passcode"
         type="password"
         autoFocus
         value={passcode}
         onChange={(e) => setPasscode(e.target.value)}
-        placeholder="Passcode"
-        className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10"
+        className="h-11 w-full rounded-xl border border-line bg-surface px-3.5 text-[15px] text-ink outline-none focus:border-accent focus:ring-4 focus:ring-accent/15"
       />
-      {err && <div className="text-sm text-red-600">{err}</div>}
-      <button disabled={busy || !passcode} className="w-full rounded-lg bg-zinc-900 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:bg-zinc-400">
-        {busy ? "…" : "Enter"}
+      {err && <div role="alert" className="text-[14px] text-blocked">{err}. Check it and try again.</div>}
+      <button disabled={busy || !passcode} className="h-11 w-full rounded-xl bg-ink text-[15px] font-semibold text-white transition-colors hover:bg-[#1b2c4a] disabled:bg-faint">
+        {busy ? "Signing in…" : "Sign in"}
       </button>
     </form>
   );

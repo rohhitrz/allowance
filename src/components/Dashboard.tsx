@@ -6,15 +6,15 @@ import { Ledger, type LedgerHandle } from "./Ledger";
 import { ApprovalCard, Feed, MandateCard } from "./Panels";
 import { ReceiptDrawer } from "./ReceiptDrawer";
 import type { Approval, Event, Mandate, Purchase, Run } from "./types";
-import { Button, SectionTitle } from "./ui";
+import { BrandMark, Button, SectionTitle } from "./ui";
 
 const DEMO_STEPS = [
-  ["mandate", "1 · Gift mandate"],
-  ["headphones", "2 · $170 headphones (hold)"],
-  ["candle", "3 · $89.99 candle set"],
-  ["attack", "4 · Injection: 5 gift cards"],
-  ["freeze", "5 · Stop everything"],
-  ["retry", "6 · Agent retries"],
+  ["mandate", "1. Gift mandate"],
+  ["headphones", "2. $170 headphones (hold)"],
+  ["candle", "3. $89.99 candle set"],
+  ["attack", "4. Injection: 5 gift cards"],
+  ["freeze", "5. Stop everything"],
+  ["retry", "6. Agent retries"],
 ] as const;
 
 export function Dashboard() {
@@ -203,83 +203,124 @@ export function Dashboard() {
   const awaitingBuyer = purchases.filter((p) => p.status === "RESERVED" && p.paypal.approveUrl);
 
   return (
-    <div className="min-h-screen bg-zinc-50">
-      <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center gap-4 px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white">A</div>
-            <div>
-              <div className="text-[15px] font-semibold leading-tight text-zinc-900">Allowance</div>
-              <div className="text-[11px] leading-tight text-zinc-500">Your agent can be fooled. Your money can&apos;t.</div>
+    <div className="min-h-screen bg-canvas">
+      <header className="sticky top-0 z-30 border-b border-line bg-surface/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="flex shrink-0 items-center gap-3">
+            <BrandMark />
+            <div className="min-w-0">
+              <div className="font-display text-[19px] font-semibold leading-tight tracking-[-0.02em] text-ink">Allowance</div>
+              <div className="hidden truncate text-[12.5px] leading-tight text-muted sm:block">Your agent can be fooled. Your money can&apos;t.</div>
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <span className={`hidden items-center gap-1.5 text-xs sm:flex ${connected ? "text-emerald-700" : "text-zinc-400"}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500" : "bg-zinc-300"}`} />
+            <span
+              className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[12.5px] font-medium sm:inline-flex ${connected ? "bg-paid-bg text-paid" : "bg-neutral-bg text-muted"}`}
+              title={connected ? "Receiving live updates" : "Reconnecting to live updates"}
+            >
+              <span className="relative flex h-2 w-2">
+                {connected && <span className="absolute inset-0 animate-ping rounded-full bg-paid/50" />}
+                <span className={`relative h-2 w-2 rounded-full ${connected ? "bg-paid" : "bg-faint"}`} />
+              </span>
               {connected ? "Live" : "Reconnecting"}
             </span>
             {vault &&
               (vault.linked ? (
-                <span className="hidden rounded-lg bg-[#003087]/5 px-2.5 py-1 text-xs font-medium text-[#003087] md:inline" title="Vaulted PayPal (sandbox)">
-                  PayPal linked{vault.payerEmail ? ` · ${vault.payerEmail}` : ""}
+                <span
+                  className="hidden max-w-[280px] items-center gap-2 truncate rounded-full border border-line bg-surface py-1 pl-1.5 pr-3 text-[12.5px] text-ink-2 lg:inline-flex"
+                  title={`PayPal linked (sandbox)${vault.payerEmail ? `: ${vault.payerEmail}` : ""}`}
+                >
+                  <PayPalGlyph />
+                  <span className="truncate">{vault.payerEmail ?? "PayPal linked"}</span>
                 </span>
               ) : (
                 <Button onClick={linkPayPal} className="hidden md:inline-flex">
-                  Link PayPal
+                  <PayPalGlyph /> Link PayPal
                 </Button>
               ))}
             {demoMode && (
               <select
-                className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-700"
+                className="h-9 w-[44px] rounded-lg border border-line bg-surface px-2.5 text-[14px] text-ink-2 hover:border-[#c9d0db] sm:w-auto"
                 value=""
                 onChange={(e) => e.target.value && demo(e.target.value)}
                 aria-label="Demo script"
               >
-                <option value="">Demo script…</option>
+                <option value="">Demo script</option>
                 {DEMO_STEPS.map(([k, label]) => (
                   <option key={k} value={k}>
                     {label}
                   </option>
                 ))}
-                <option value="reset">↺ Reset demo data</option>
+                <option value="reset">Reset demo data</option>
               </select>
             )}
-            <Button variant="danger" onClick={freeze} disabled={freezing || !anyActive} className="px-4 font-semibold" title="Kill switch: freeze every mandate and void open holds">
-              {freezing ? "Stopping…" : "Stop everything"}
+            <Button
+              variant="danger"
+              onClick={freeze}
+              disabled={freezing || !anyActive}
+              className="px-3 sm:px-4"
+              title="Kill switch: freeze every mandate and void open holds"
+            >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
+                <rect x="3" y="3" width="10" height="10" rx="2" />
+              </svg>
+              {freezing ? "Stopping…" : (
+                <>
+                  <span className="sm:hidden">Stop</span>
+                  <span className="hidden sm:inline">Stop everything</span>
+                </>
+              )}
             </Button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-[1600px] grid-cols-1 gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)_300px]">
-        <section className="space-y-4">
+      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)_300px]">
+        <section className="min-w-0 space-y-6">
           <div>
-            <SectionTitle>Tell Allowance</SectionTitle>
+            <SectionTitle hint="Type or talk. Set a budget, approve a hold, or stop the agent.">Tell Allowance</SectionTitle>
             <CommandBar ref={voice} onChanged={() => void loadMandates()} />
           </div>
-          {approvals.map((a) => (
-            <ApprovalCard key={a.id} a={a} onDecided={() => void loadApprovals()} onError={flash} />
-          ))}
-          {awaitingBuyer.map((p) => (
-            <div key={p.id} className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
-              <div className="text-xs font-semibold uppercase tracking-wider text-indigo-800">Finish in PayPal</div>
-              <p className="mt-1.5 text-[15px] leading-snug text-zinc-900">
-                {p.quantity} × {p.product.name}, {money(p.total.amountCents)} passed your rules. No PayPal account is linked, so PayPal needs your approval for this one.
-              </p>
-              <div className="mt-3 flex gap-2">
-                <a href={p.paypal.approveUrl} className="inline-flex items-center rounded-lg bg-[#003087] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#00256b]">
-                  Approve in PayPal
-                </a>
-                <a href={`/paypal/cancel?purchase=${p.id}`} className="inline-flex items-center rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50">
-                  Cancel
-                </a>
-              </div>
-            </div>
-          ))}
-          <div>
-            <SectionTitle>Mandates</SectionTitle>
+          {(approvals.length > 0 || awaitingBuyer.length > 0) && (
             <div className="space-y-3">
-              {mandates.length === 0 && <div className="text-sm text-zinc-500">No mandates yet.</div>}
+              {approvals.map((a) => (
+                <ApprovalCard key={a.id} a={a} onDecided={() => void loadApprovals()} onError={flash} />
+              ))}
+              {awaitingBuyer.map((p) => (
+                <div key={p.id} className="anim-rise rounded-2xl border border-[#c7d3f5] bg-[#f3f6fe] p-4">
+                  <div className="flex items-center gap-2 text-[13px] font-semibold text-accent">
+                    <PayPalGlyph /> Finish in PayPal
+                  </div>
+                  <p className="mt-2 text-[15px] leading-snug text-ink">
+                    {p.quantity} × {p.product.name}, <span className="num font-semibold">{money(p.total.amountCents)}</span>, passed your rules. No PayPal
+                    account is linked, so PayPal needs your approval for this one.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <a
+                      href={p.paypal.approveUrl}
+                      className="inline-flex h-9 items-center rounded-lg bg-[#003087] px-3.5 text-[14px] font-semibold text-white hover:bg-[#00256b]"
+                    >
+                      Approve in PayPal
+                    </a>
+                    <a
+                      href={`/paypal/cancel?purchase=${p.id}`}
+                      className="inline-flex h-9 items-center rounded-lg bg-surface px-3.5 text-[14px] font-semibold text-ink ring-1 ring-inset ring-line hover:bg-sunken"
+                    >
+                      Cancel
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div>
+            <SectionTitle hint="What your agent is allowed to spend.">Mandates</SectionTitle>
+            <div className="space-y-3">
+              {mandates.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-[14px] text-muted">
+                  No mandates yet. Describe one above, for example “groceries, $80 a week”.
+                </div>
+              )}
               {mandates.map((m) => (
                 <MandateCard key={m.id} m={m} run={latestRun[m.id]} onChanged={() => void loadMandates()} onError={flash} />
               ))}
@@ -289,44 +330,59 @@ export function Dashboard() {
 
         <section className="flex min-w-0 flex-col">
           <SectionTitle
+            hint="Every purchase attempt, with the rules it was checked against. Click a row for the full receipt."
             right={
-              <input
-                value={quickFilter}
-                onChange={(e) => setQuickFilter(e.target.value)}
-                placeholder="Filter: blocked, gift_cards, headphones…"
-                className="w-64 rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs outline-none focus:border-zinc-900"
-              />
+              <label className="relative block w-full sm:w-72">
+                <span className="sr-only">Filter the ledger</span>
+                <svg viewBox="0 0 20 20" className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                  <circle cx="9" cy="9" r="5.5" />
+                  <path d="m13.5 13.5 3 3" strokeLinecap="round" />
+                </svg>
+                <input
+                  value={quickFilter}
+                  onChange={(e) => setQuickFilter(e.target.value)}
+                  placeholder="Filter by status, category, product"
+                  className="h-9 w-full rounded-lg border border-line bg-surface pl-8 pr-3 text-[14px] text-ink outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/15"
+                />
+              </label>
             }
           >
             Receipts ledger
           </SectionTitle>
-          <div className="mb-3 grid grid-cols-4 gap-2">
+          <div className="mb-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
             {(
               [
-                ["Attempts", stats.total, "text-zinc-900", ""],
-                ["Captured", stats.captured, "text-emerald-700", "captured"],
-                ["Held", stats.held, "text-amber-700", "held"],
-                ["Blocked", stats.blocked, "text-red-700", "blocked"],
+                ["Attempts", stats.total, "text-ink", "bg-ink", ""],
+                ["Paid", stats.captured, "text-paid", "bg-paid", "captured"],
+                ["Held for you", stats.held, "text-held", "bg-held", "held"],
+                ["Blocked", stats.blocked, "text-blocked", "bg-blocked", "blocked"],
               ] as const
-            ).map(([label, n, color, q]) => (
-              <button
-                key={label}
-                onClick={() => setQuickFilter((cur) => (cur === q ? "" : q))}
-                className={`rounded-xl border bg-white px-3 py-2 text-left transition-colors hover:border-zinc-400 ${quickFilter === q && q ? "border-zinc-900" : "border-zinc-200"}`}
-              >
-                <div className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">{label}</div>
-                <div className={`text-xl font-semibold tabular-nums ${color}`}>{n}</div>
-              </button>
-            ))}
+            ).map(([label, n, color, bar, q]) => {
+              const on = Boolean(q) && quickFilter === q;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setQuickFilter((cur) => (cur === q ? "" : q))}
+                  aria-pressed={on}
+                  className={`group relative overflow-hidden rounded-xl border bg-surface px-3.5 py-2.5 text-left transition-colors hover:border-[#c2cad6] ${
+                    on ? "border-ink ring-1 ring-ink" : "border-line"
+                  }`}
+                >
+                  <span className={`absolute inset-y-0 left-0 w-[3px] ${bar}`} aria-hidden />
+                  <div className="text-[13px] font-medium text-muted">{label}</div>
+                  <div className={`num font-display text-[26px] font-semibold leading-tight tracking-[-0.02em] ${color}`}>{n}</div>
+                </button>
+              );
+            })}
           </div>
-          <div className="h-[calc(100vh-230px)] min-h-[420px]">
+          <div className="h-[calc(100vh-260px)] min-h-[440px]">
             <Ledger ref={ledger} rows={purchases} mandates={mandates} onOpen={(p) => setOpenId(p.id)} quickFilter={quickFilter} />
           </div>
         </section>
 
         <section className="min-w-0 lg:col-span-2 xl:col-span-1">
-          <SectionTitle>Live activity</SectionTitle>
-          <div className="max-h-[calc(100vh-130px)] overflow-y-auto rounded-xl border border-zinc-200 bg-white p-2">
+          <SectionTitle hint="What the agent and PayPal are doing right now.">Live activity</SectionTitle>
+          <div className="scroll-quiet max-h-[calc(100vh-150px)] overflow-y-auto rounded-2xl border border-line bg-surface px-2 py-2">
             <Feed events={events} onOpen={setOpenId} />
           </div>
         </section>
@@ -334,15 +390,26 @@ export function Dashboard() {
 
       {toast && (
         <div
-          className={`fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl px-4 py-2.5 text-sm shadow-lg ${
-            toast.kind === "error" ? "bg-red-600 text-white" : "bg-zinc-900 text-white"
+          className={`anim-rise fixed bottom-6 left-1/2 z-50 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-start gap-2.5 rounded-xl px-4 py-3 text-[14px] leading-snug text-white shadow-[0_12px_32px_-8px_rgba(12,27,51,0.45)] ${
+            toast.kind === "error" ? "bg-blocked" : "bg-ink"
           }`}
           role="status"
         >
+          <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${toast.kind === "error" ? "bg-white" : "bg-[#7fd3b0]"}`} aria-hidden />
           {toast.text}
         </div>
       )}
       <ReceiptDrawer purchaseId={openId} version={receiptVersion} onClose={() => setOpenId(null)} />
     </div>
+  );
+}
+
+function PayPalGlyph() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0" aria-hidden>
+      <circle cx="10" cy="10" r="10" fill="#003087" />
+      <path d="M7.3 14.6 8.6 5.6h3.2c1.9 0 2.9 1 2.6 2.6-.3 1.9-1.6 2.8-3.4 2.8H9.6l-.5 3.6z" fill="#fff" />
+      <path d="M9.6 11h1.4c1.8 0 3.1-.9 3.4-2.8l.1-.5c.6.5.8 1.3.6 2.2-.3 1.8-1.6 2.7-3.4 2.7h-.9l-.3 2H8.9z" fill="#4fa3e0" />
+    </svg>
   );
 }

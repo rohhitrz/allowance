@@ -1,19 +1,123 @@
 @import "tailwindcss";
 
+/*
+ * Allowance design tokens.
+ * Navy ink on a cool grey canvas; status colours carry meaning (paid, held, blocked, frozen).
+ * Fonts: Bricolage Grotesque for titles and money, Public Sans for reading, IBM Plex Mono for ids only.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #eef1f5;
+  --surface: #ffffff;
+  --sunken: #f6f8fa;
+  --line: #dde2ea;
+  --line-soft: #eaedf2;
+  --ink: #0c1b33;
+  --ink-2: #33415a;
+  --muted: #66738a;
+  --faint: #95a0b2;
+  --accent: #1f4fd6;
+  --paid: #0b7a55;
+  --paid-bg: #e6f4ee;
+  --held: #a35a00;
+  --held-bg: #fdf2e1;
+  --blocked: #b42318;
+  --blocked-bg: #fdecea;
+  --frozen: #1d5fa6;
+  --frozen-bg: #e6eff9;
+  --neutral-bg: #eef0f4;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-paid: var(--paid);
+  --color-paid-bg: var(--paid-bg);
+  --color-held: var(--held);
+  --color-held-bg: var(--held-bg);
+  --color-blocked: var(--blocked);
+  --color-blocked-bg: var(--blocked-bg);
+  --color-frozen: var(--frozen);
+  --color-frozen-bg: var(--frozen-bg);
+  --color-neutral-bg: var(--neutral-bg);
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 0;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #c9d7fb;
+}
+
+/* Clear keyboard focus everywhere, never on mouse click. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin, quiet scrollbars for the feed and drawer. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd2dc transparent;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.anim-rise {
+  animation: rise 220ms ease-out both;
+}
+.anim-slide {
+  animation: slide-in 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }
