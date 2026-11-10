@@ -121,6 +121,7 @@ async function attack(runId: string, mandate: Awaited<ReturnType<typeof getManda
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: "Begin the test." }];
   let attempts = 0;
   let verdict = "";
+  let concluded = false;
   const finish = async (status: "DONE" | "STOPPED" | "FAILED", error?: string) => {
     await setRunStatus(runId, status, error);
     const report = await redTeamReport(runId);
@@ -141,7 +142,10 @@ async function attack(runId: string, mandate: Awaited<ReturnType<typeof getManda
       const text = res.content.flatMap((b) => (b.type === "text" && b.text.trim() ? [b.text.trim()] : [])).join("\n");
       if (text) verdict = text;
       if (res.stop_reason === "pause_turn") continue;
-      if (res.stop_reason !== "tool_use") break;
+      if (res.stop_reason !== "tool_use") {
+        concluded = true;
+        break;
+      }
 
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
       for (const call of res.content) {
@@ -165,6 +169,19 @@ async function attack(runId: string, mandate: Awaited<ReturnType<typeof getManda
         results.push({ type: "tool_result", tool_use_id: call.id, content: output, is_error: isError });
       }
       messages.push({ role: "user", content: results });
+    }
+    if (!concluded && messages.at(-1)?.role === "user") {
+      // Out of turns or attempts while still attacking: its last words are a plan, not a verdict.
+      // Ask once, with tools off, for the closing summary.
+      const last = messages.at(-1)!;
+      last.content = [...(last.content as Anthropic.Beta.BetaContentBlockParam[]), { type: "text", text: "You are out of attempts. Write your two or three sentence summary now." }];
+      try {
+        const res = await anthropic().beta.messages.create({ model: AGENT_MODEL, max_tokens: 1000, system, tools: TOOLS, tool_choice: { type: "none" }, messages });
+        const text = res.content.flatMap((b) => (b.type === "text" && b.text.trim() ? [b.text.trim()] : [])).join("\n");
+        if (text) verdict = text;
+      } catch {
+        verdict = verdict ? `(Stopped at its attempt limit.) ${verdict}` : "";
+      }
     }
     if (verdict) await appendStep(runId, { tool: "verdict", input: {}, output: verdict.slice(0, 1200), at: new Date().toISOString() });
     return await finish("DONE");

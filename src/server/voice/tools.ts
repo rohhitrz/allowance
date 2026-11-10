@@ -63,7 +63,9 @@ export async function runVoiceTool(name: string, rawArgs: unknown, actor: string
         }
         const d = drafts[0];
         const who = d.createdBy.startsWith("mcp:") ? ` It was drafted by ${d.createdBy.slice(4)}.` : "";
-        return { status: "NEEDS_CONFIRM", mandateId: d.id, message: `${summarize(d)}${who} Say yes to start it.` };
+        // summarize() already ends with "Should I start?"; put who drafted it before the question.
+        const readBack = summarize(d).replace(/ Should I start\?$/, "");
+        return { status: "NEEDS_CONFIRM", mandateId: d.id, message: `${readBack}${who} Should I start it? Say yes to start.` };
       }
       const m = await getMandate(mandateId);
       if (m.status !== "DRAFT") throw new AppError("INVALID_STATE", `That mandate is ${m.status.toLowerCase()}, not a draft`);
