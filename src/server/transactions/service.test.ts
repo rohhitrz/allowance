@@ -30,6 +30,7 @@ import {
   freezeAll,
   refundPurchase,
   recheckPendingCaptures,
+  recheckPendingRefunds,
   releaseStaleReservations,
   requestPurchase,
   retryCaptures,
@@ -1000,5 +1001,131 @@ suite("transaction service", () => {
     expect(report.totals).toMatchObject({ attempts: 3, blocked: 1, needsHuman: 1, refused: 1, breaches: 0 });
     expect(report.summary).toBe("Red team finished: 3 attacks, 3 stopped, 0 rules broken.");
     expect((await row(over.purchase.id)).status).toBe("VOIDED"); // the probe's hold was released
+  });
+
+  // ---------- fifth review ----------
+
+  it("the red team's release never cancels a hold a human already approved", async () => {
+    const m = await giftMandate();
+    const held = await buy(m.id, HEADPHONES_ID);
+    await decideApproval({ approvalId: held.approval!.id, decision: "approve", actor: "user:dashboard" });
+    calls = [];
+    const after = await cancelHold(held.purchase.id, "system", "red-team probe");
+    expect(after.status).toBe("CAPTURED");
+    expect(ops()).not.toContain("void");
+  });
+
+  it("a crash mid-authorize is replayed with the same saved account even after it was unlinked", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, authorizeWithVault: async () => new Promise(() => {}) });
+    void buy(m.id, CANDLE_SET_ID);
+    await new Promise((r) => setTimeout(r, 300));
+    setGateway(fake);
+    await db().update(paypalVaults).set({ status: "REVOKED" });
+    calls = [];
+    expect(await releaseStaleReservations(new Date(Date.now() + 3 * 60_000))).toBe(1);
+    const [p] = await db().select().from(purchases).where(eq(purchases.mandateId, m.id));
+    expect(p.status).toBe("VOIDED");
+    expect(calls[0].args.vaultId).toBe("VAULT_TEST");
+  });
+
+  it("…and with no saved account left at all, the reservation is released instead of blocking the mandate", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, authorizeWithVault: async () => new Promise(() => {}) });
+    void buy(m.id, CANDLE_SET_ID);
+    await new Promise((r) => setTimeout(r, 300));
+    setGateway(fake);
+    await db().update(paypalVaults).set({ paymentTokenId: null, status: "REVOKED" });
+    expect(await releaseStaleReservations(new Date(Date.now() + 3 * 60_000))).toBe(1);
+    const [p] = await db().select().from(purchases).where(eq(purchases.mandateId, m.id));
+    expect(p.status).toBe("FAILED");
+    expect(p.recovery).toBeNull();
+  });
+
+  it("an abandoned popup whose authorization already EXPIRED is just released, never voided", async () => {
+    await db().update(paypalVaults).set({ status: "REVOKED" });
+    const m = await giftMandate();
+    const r = await buy(m.id, CANDLE_SET_ID);
+    setGateway({ ...fake, getOrderAuthorizations: async () => [{ authorizationId: "AUTH_OLD", status: "EXPIRED" }] });
+    calls = [];
+    try {
+      expect(await releaseStaleReservations(new Date(Date.now() + 11 * 60_000))).toBe(1);
+      expect((await row(r.purchase.id)).status).toBe("FAILED");
+      expect(ops()).toEqual([]);
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("a PENDING refund keeps the purchase charged until PayPal completes it; a FAILED refund is an error", async () => {
+    const m = await giftMandate({ maxOrders: 2 });
+    const a = await buy(m.id, CANDLE_SET_ID);
+    setGateway({ ...fake, refundCapture: async () => ({ refundId: "REF_P", status: "PENDING" }) });
+    try {
+      const p = await refundPurchase(a.purchase.id, "user:dashboard");
+      expect(p.status).toBe("CAPTURED");
+      expect(p.recovery).toBe("refund_pending");
+      setGateway({ ...fake, getRefund: async (refundId) => ({ refundId, status: "PENDING" }) });
+      expect(await recheckPendingRefunds()).toBe(0);
+      clearSweepBackoff();
+      setGateway(fake); // getRefund -> COMPLETED
+      expect(await recheckPendingRefunds()).toBe(1);
+      expect((await row(a.purchase.id)).status).toBe("REFUNDED");
+
+      const b = await buy(m.id, HEADPHONES_ID);
+      await decideApproval({ approvalId: b.approval!.id, decision: "approve", actor: "user:dashboard" });
+      setGateway({ ...fake, refundCapture: async () => ({ refundId: "REF_F", status: "FAILED" }) });
+      await expect(refundPurchase(b.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "PAYPAL_ERROR" });
+      expect((await row(b.purchase.id)).status).toBe("CAPTURED");
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("the audit catches a forbidden purchase that was charged and then refunded, and the report calls it a breach", async () => {
+    const m = await giftMandate();
+    const runId = "run_redteam_refunded";
+    await db().insert(agentRuns).values({ id: runId, mandateId: m.id, brief: RED_TEAM_BRIEF, model: "test" });
+    const cards = await requestPurchase({ mandateId: m.id, productId: GIFT_CARD_100_ID, quantity: 1, reason: "x", actor: RED_TEAM_ACTOR, runId });
+    // Forge a bypass that was later refunded: it no longer holds money, but a rule was still broken.
+    await db().execute(sql`UPDATE purchases SET status = 'REFUNDED', paypal_called = true, paypal_capture_id = 'FORGED', paypal_refund_id = 'R' WHERE id = ${cards.purchase.id}`);
+    const audit = await auditMandate(m.id);
+    const cat = audit.checks.find((c) => c.name === "Nothing from a blocked category")!;
+    expect(cat.ok).toBe(false);
+    expect(cat.offenders).toEqual([cards.purchase.id]);
+    expect(audit.notChecked.length).toBeGreaterThan(0);
+
+    const steps = [{ tool: "request_purchase", input: { tactic: "gift card" }, output: `CAPTURED. Purchase id ${cards.purchase.id}.`, at: new Date().toISOString() }];
+    await db().update(agentRuns).set({ steps, status: "DONE" }).where(eq(agentRuns.id, runId));
+    const report = await redTeamReport(runId);
+    expect(report.attempts[0].outcome).toBe("breach");
+    expect(report.totals.breaches).toBeGreaterThan(0);
+  });
+
+  it("the audit flags a product bought twice when duplicates aren't allowed", async () => {
+    const m = await giftMandate({ maxOrders: 3, hardLimitCents: 50000 });
+    const a = await buy(m.id, CANDLE_SET_ID);
+    await db().execute(sql`INSERT INTO purchases SELECT 'pur_dupe', mandate_id, mandate_version, run_id, requested_by, NULL, product_id, product_name,
+      product_category, unit_price_cents, quantity, total_cents, reason, period_start, decision, rule_results, status, paypal_called
+      FROM purchases WHERE id = ${a.purchase.id}`);
+    const audit = await auditMandate(m.id);
+    expect(audit.checks.find((c) => c.name === "No product bought twice")?.ok).toBe(false);
+  });
+
+  it("only one agent run can be active on a mandate, even when two start at once", async () => {
+    const m = await giftMandate();
+    const start = (id: string) => db().insert(agentRuns).values({ id, mandateId: m.id, brief: RED_TEAM_BRIEF, model: "test" });
+    const { insertRunOnce } = await import("../errors");
+    const results = await Promise.allSettled([insertRunOnce(() => start("run_a")), insertRunOnce(() => start("run_b"))]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "INVALID_STATE" } });
+  });
+
+  it("a retried tool call with the same idempotency key buys once", async () => {
+    const m = await giftMandate({ maxOrders: 2 });
+    const req = () => requestPurchase({ mandateId: m.id, productId: CANDLE_SET_ID, quantity: 1, reason: "x", actor: "agent:allowance", idempotencyKey: "run_x:toolu_1" });
+    const [a, b] = await Promise.all([req(), req()]);
+    expect(a.purchase.id).toBe(b.purchase.id);
+    expect(ops().filter((o) => o === "capture")).toHaveLength(1);
   });
 });

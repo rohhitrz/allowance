@@ -107,7 +107,8 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Agents send an idempotency key per tool call (`runId:toolUseId`); MCP accepts `idempotencyKey`; keys are scoped per caller.
   - Audit: per-purchase checks (category, quantity, per-item) cover refunded/voided purchases too; new duplicate and expiry checks; each check lists offending purchase ids; a `notChecked` list is shown in the report.
   - Red-team report marks a purchase "allowed" only if no audit check names it; otherwise "breach".
-  - Not done: new regression tests for each fix (existing tests updated), `next build` not re-run, not re-tested on the sandbox.
+  - 9 regression tests added (140 total): approved hold survives the red-team release, crash replay after unlink, no account left, EXPIRED popup auth, PENDING/FAILED refunds, refunded forbidden purchase caught by audit and report, duplicate product, two runs at once, retried tool call buys once. `next build` passes. Dev DB migrated.
+  - Not done: re-run on the real PayPal sandbox and live Claude (red team + refund) after these changes.
 - [x] **README rewritten** for judges: the problem, "try to break it", a two-minute path, what it is and is not, tools statement.
 - **Hackathon research** (Nov 10): five equally weighted criteria (technical implementation, design, impact, innovation, presentation; ties go to technical). Judges may score from the video and description alone. A project can win one main or honourable-mention prize plus one sponsor prize. The AG Grid prize looks at polish (custom cells, theming, layout) and use of AG Studio's agent framework, which we don't use. Render's prize needs a Render deploy. "Gift-finder shopping agent" is a widely suggested idea, so the pitch must lead with the control layer and the red team, not the shopping.
 
