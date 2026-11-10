@@ -126,8 +126,12 @@ export function buildMcpServer(client: Client) {
     "get_receipt",
     { description: "The decision receipt for a purchase attempt: every rule result, the PayPal state and the timeline.", inputSchema: { purchaseId: z.string() } },
     wrap(async ({ purchaseId }) => {
-      const r = await getReceipt(purchaseId);
-      await ownedMandate(client, r.purchase.mandateId);
+      // Same answer for "no such purchase" and "not yours", so ids can't be probed.
+      const r = await getReceipt(purchaseId).catch(() => null);
+      if (!r) throw new AppError("NOT_FOUND", `Unknown purchase ${purchaseId}`);
+      await ownedMandate(client, r.purchase.mandateId).catch(() => {
+        throw new AppError("NOT_FOUND", `Unknown purchase ${purchaseId}`);
+      });
       return text({ summary: r.summary, status: r.purchase.status, ruleResults: r.ruleResults, timeline: r.timeline.map((e) => ({ at: e.at, actor: e.actor, type: e.type })) });
     }),
   );

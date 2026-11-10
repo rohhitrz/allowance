@@ -13,6 +13,8 @@ export type Awaiting =
   | { kind: "confirm"; mandateId: string }
   /** The user said "no" to starting this draft. A later bare "start now" still means this one. */
   | { kind: "draft"; mandateId: string }
+  /** We named one purchase and asked "refund it?". Only a yes refunds it. */
+  | { kind: "refund"; purchaseId: string }
   | null;
 
 export type Intent =
@@ -21,7 +23,8 @@ export type Intent =
   /** No mandateId: the server starts the user's only draft, and refuses if there are several. */
   | { kind: "confirm"; mandateId?: string }
   | { kind: "keep_draft"; mandateId: string }
-  | { kind: "refund" }
+  | { kind: "refund"; purchaseId?: string }
+  | { kind: "cancelled"; what: "refund" }
   | { kind: "activity" }
   | { kind: "pending" }
   | { kind: "mandate"; text: string };
@@ -69,6 +72,9 @@ export function interpret(utterance: string, awaiting: Awaiting): Intent {
   if (isStop(t)) return { kind: "freeze" };
   if (awaiting?.kind === "approval") {
     return { kind: "decide", decision: isApprove(t) ? "approve" : "reject", approvalId: awaiting.approvalId };
+  }
+  if (awaiting?.kind === "refund") {
+    return isYes(t) ? { kind: "refund", purchaseId: awaiting.purchaseId } : { kind: "cancelled", what: "refund" };
   }
   if (awaiting?.kind === "confirm") {
     return isYes(t) ? { kind: "confirm", mandateId: awaiting.mandateId } : { kind: "keep_draft", mandateId: awaiting.mandateId };

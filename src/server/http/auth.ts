@@ -12,8 +12,15 @@ import { AppError } from "../errors";
 export const SESSION_COOKIE = "allowance_session";
 const SESSION_TTL_S = 7 * 24 * 3600;
 
+/**
+ * In production, cookies are signed only with SESSION_SECRET (render.yaml generates one). Signing
+ * with the passcode would let anyone holding one cookie brute-force the passcode offline, so a
+ * production server with no SESSION_SECRET stays locked rather than falling back.
+ */
 function secret() {
-  return process.env.SESSION_SECRET ?? process.env.APP_PASSCODE ?? "dev-only-secret";
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  if (isProduction()) throw new AppError("UNAUTHORIZED", "Dashboard is locked: set SESSION_SECRET on the server");
+  return process.env.APP_PASSCODE ?? "dev-only-secret";
 }
 
 function sign(payload: string) {
@@ -30,15 +37,44 @@ const isProduction = () => process.env.NODE_ENV === "production";
 
 /** "passcode": sign in with APP_PASSCODE. "open": local dev, no passcode. "locked": production with no passcode set. */
 export function authMode(): "passcode" | "open" | "locked" {
-  if (process.env.APP_PASSCODE) return "passcode";
+  if (process.env.APP_PASSCODE) return isProduction() && !process.env.SESSION_SECRET ? "locked" : "passcode";
   return isProduction() ? "locked" : "open";
 }
 
 export const authRequired = () => authMode() !== "open";
 
+// ---------- sign-in throttling ----------
+// In memory, per client address: enough for one instance. 10 wrong passcodes in 15 minutes
+// blocks that address until the window passes.
+const FAILS_ALLOWED = 10;
+const FAIL_WINDOW_MS = 15 * 60_000;
+const fails = new Map<string, { n: number; since: number }>();
+
+export function clientAddress(req: Request) {
+  return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "local";
+}
+
+export function signInBlocked(addr: string, now = Date.now()) {
+  const f = fails.get(addr);
+  if (!f || now - f.since > FAIL_WINDOW_MS) return false;
+  return f.n >= FAILS_ALLOWED;
+}
+
+export function recordSignIn(addr: string, ok: boolean, now = Date.now()) {
+  if (ok) return void fails.delete(addr);
+  const f = fails.get(addr);
+  if (!f || now - f.since > FAIL_WINDOW_MS) fails.set(addr, { n: 1, since: now });
+  else f.n++;
+  if (fails.size > 10_000) for (const [k, v] of fails) if (now - v.since > FAIL_WINDOW_MS) fails.delete(k);
+}
+
+/** Tests only. */
+export const clearSignInFailures = () => fails.clear();
+
 export function checkPasscode(passcode: string) {
   const want = process.env.APP_PASSCODE;
   if (!want) return authMode() === "open";
+  if (authMode() === "locked") return false; // production without SESSION_SECRET: nobody gets in
   return safeEqual(passcode, want);
 }
 

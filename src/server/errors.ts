@@ -6,7 +6,8 @@ export type ErrorCode =
   | "INVALID_STATE"
   | "APPROVAL_EXPIRED"
   | "PARSE_FAILED"
-  | "PAYPAL_ERROR";
+  | "PAYPAL_ERROR"
+  | "RATE_LIMITED";
 
 const STATUS: Record<ErrorCode, number> = {
   VALIDATION_ERROR: 400,
@@ -17,6 +18,7 @@ const STATUS: Record<ErrorCode, number> = {
   APPROVAL_EXPIRED: 410,
   PARSE_FAILED: 422,
   PAYPAL_ERROR: 502,
+  RATE_LIMITED: 429,
 };
 
 export class AppError extends Error {

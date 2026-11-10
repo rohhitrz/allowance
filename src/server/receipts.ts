@@ -10,14 +10,22 @@ export function receiptSummary(p: PurchaseRow): string {
   const hard = failedRules(p.ruleResults, "hard");
   const soft = failedRules(p.ruleResults, "soft");
   const what = `${p.quantity} × ${p.productName} (${fmt(p.totalCents)})`;
+  if (p.recovery === "needs_review") {
+    return `${p.status === "FAILED" ? "Released" : "Recorded"} ${what}, but PayPal's state couldn't be confirmed: ${p.recoveryNote ?? "check it in PayPal"}.`;
+  }
   switch (p.status) {
     case "BLOCKED":
       return `Blocked by ${hard.length} hard rule${hard.length === 1 ? "" : "s"}: ${hard.map((r) => r.detail).join("; ")}. PayPal was never called.`;
     case "HELD":
+      if (p.recovery === "void_retry") {
+        return `Not approved: releasing ${what} is pending. PayPal hasn't confirmed the void of authorization ${p.paypalAuthorizationId} yet; it is retried until it lands, and nothing will be charged.`;
+      }
       return `Held for your approval: ${soft.map((r) => r.detail).join("; ")}. PayPal authorization ${p.paypalAuthorizationId} is on hold.`;
     case "CAPTURED":
       if (p.recovery === "refund_pending") {
-        return `Refund requested for ${what}. PayPal refund ${p.paypalRefundId} is still PENDING; it counts as spent until it completes.`;
+        return p.paypalRefundId
+          ? `Refund requested for ${what}. PayPal refund ${p.paypalRefundId} is still PENDING; it counts as spent until it completes.`
+          : `Refund requested for ${what}, but PayPal's answer was lost. It is being checked (never refunded twice); it counts as spent until confirmed.`;
       }
       if (p.recovery === "capture_pending") {
         return `Approved ${what}. PayPal capture ${p.paypalCaptureId} is still PENDING and can still be declined.`;
@@ -36,7 +44,9 @@ export function receiptSummary(p: PurchaseRow): string {
     case "RESERVED":
       return p.paypalApproveUrl
         ? `Reserved ${what}; waiting for the buyer to approve in PayPal.`
-        : `Reserved ${what}; authorizing with PayPal.`;
+        : p.recoveryNote
+          ? `Reserved ${what}; PayPal hasn't confirmed the authorization (${p.recoveryNote}). It is being checked; the budget stays reserved until then.`
+          : `Reserved ${what}; authorizing with PayPal.`;
     default:
       return `${p.status}: ${what}`;
   }

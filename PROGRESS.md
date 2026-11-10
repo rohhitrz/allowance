@@ -109,6 +109,21 @@ Deadline: submit by **Thu 12 Nov, 10 PM IST** (hard close Fri 13 Nov, 1:30 AM IS
   - Red-team report marks a purchase "allowed" only if no audit check names it; otherwise "breach".
   - 9 regression tests added (140 total): approved hold survives the red-team release, crash replay after unlink, no account left, EXPIRED popup auth, PENDING/FAILED refunds, refunded forbidden purchase caught by audit and report, duplicate product, two runs at once, retried tool call buys once. `next build` passes. Dev DB migrated.
   - Not done: re-run on the real PayPal sandbox and live Claude (red team + refund) after these changes.
+- [x] **Sixth review fixes** (Nov 11, 161 tests, migration `0002_payment_identity`; tsc, lint, build pass):
+  - An unclear saved-account authorize (timeout, lost/unreadable response, 5xx, PREVIOUS_REQUEST_IN_PROGRESS) keeps the reservation and is replayed with the same request id; only a 400/422 with PayPal's JSON error is a refusal. Requests time out after 20 s; non-JSON bodies keep status and debug id.
+  - The vault row used is stored on the purchase (`paypal_vault_id`); recovery never uses another account. Rows without it become FAILED + `needs_review`.
+  - A popup order captured before a crash stays RESERVED until its capture id is read, then goes straight to CAPTURED.
+  - No refund while a capture is pending. Refunds: lost answer → same request id replayed by the sweep (after checking whether the capture is already REFUNDED); FAILED/CANCELLED/refused → the next attempt gets a new id (`refund_attempts`). A pending refund is asked about, never resent.
+  - Unknown capture statuses are kept as spend, re-checked with backoff, and flagged `needs_review` after 10 checks.
+  - Kill switch: a capture claim (`capture_dispatched_at`) is set under the mandate lock with the final re-check. Freeze voids holds and auto-approved purchases not yet claimed, and reports claimed ones as `inFlight` (can't be recalled). No hold is opened on a mandate frozen during authorize.
+  - Agent runs heartbeat every 15 s; runs silent for 2 min are closed as FAILED by the sweep or the next start.
+  - Voice: "start now" with no draft in context reads the draft back (says if an MCP client made it) and needs a yes. Refund with no id never picks the latest capture: one → asks to confirm, several → asks which.
+  - Red team: tool output and report say what really happened (released, release pending, approved by you first); purchase ids are a field on the step. Receipts say "release pending" for a rejected hold whose void is retrying.
+  - Production needs SESSION_SECRET (locked without it); 10 wrong passcodes per address per 15 min → 429. MCP receipt: same "unknown purchase" for missing and not-yours. Event bus: a failing listener can't make a committed write look failed. Mandate money limits must be positive whole cents.
+  - Voice echo (user report): each live announcement is now spoken once across all open tabs (Web Locks + remembered event ids), hidden tabs stay quiet, and announcements queue instead of cutting each other off.
+  - Verified unchanged: PayPal return/cancel (SameSite=Lax is sent on PayPal's top-level redirect; an expired session goes through /login?next= and resumes; replays are idempotent). Rules can't be edited after confirm, so the audit's current-rules view is correct.
+  - 12 of the new tests fail against the previous service and pass now.
+  - Not done: live sandbox / live Claude rehearsal of these changes; the MCP receipt change has no automated test.
 - [x] **README rewritten** for judges: the problem, "try to break it", a two-minute path, what it is and is not, tools statement.
 - **Hackathon research** (Nov 10): five equally weighted criteria (technical implementation, design, impact, innovation, presentation; ties go to technical). Judges may score from the video and description alone. A project can win one main or honourable-mention prize plus one sponsor prize. The AG Grid prize looks at polish (custom cells, theming, layout) and use of AG Studio's agent framework, which we don't use. Render's prize needs a Render deploy. "Gift-finder shopping agent" is a widely suggested idea, so the pitch must lead with the control layer and the red team, not the shopping.
 

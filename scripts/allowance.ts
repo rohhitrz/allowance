@@ -144,7 +144,7 @@ async function story() {
 
   beat("5. “Stop everything” -> kill switch, then the agent retries");
   const f = await freezeAll({ actor: "user:voice", userId: "usr_demo" });
-  console.log(`  ${c.green("✓")} ${f.frozen} mandate(s) frozen, ${f.voided} hold(s) voided`);
+  console.log(`  ${c.green("✓")} ${f.frozen} mandate(s) frozen, ${f.voided} hold(s) voided${f.inFlight ? `, ${f.inFlight} already being charged` : ""}`);
   const retry = await agent("prd_book_poetry", 1, "Trying again after freeze");
   await printReceipt(retry.purchase.id);
 

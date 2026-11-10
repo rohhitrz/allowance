@@ -70,3 +70,23 @@ describe("summarize", () => {
     );
   });
 });
+
+describe("money limits from the parser are validated", () => {
+  const base = { title: "t", brief: "b", budgetCents: 1000, hardLimitCents: null, perItemMaxCents: null, allowedCategories: null, extraBlockedCategories: [], maxOrders: null, maxQuantity: null, noDuplicates: null, period: "once" as const, expiresAt: null };
+  const now = { now: new Date("2026-11-10T00:00:00Z"), timezone: "UTC" };
+  it("rejects fractional, zero, negative or absurd cents and bad counts with a clear message", () => {
+    for (const [over, msg] of [
+      [{ budgetCents: 10.5 }, /Budget must be a positive amount in whole cents/],
+      [{ budgetCents: 0 }, /Budget/],
+      [{ hardLimitCents: 1500.25 }, /Hard limit must be/],
+      [{ perItemMaxCents: 0 }, /Per-item maximum must be/],
+      [{ perItemMaxCents: -5 }, /Per-item maximum/],
+      [{ budgetCents: 1e12 }, /too large/],
+      [{ maxOrders: 0 }, /Max orders/],
+      [{ maxQuantity: 2.5 }, /Max quantity/],
+    ] as const) {
+      expect(() => applyDefaults({ ...base, ...over }, now)).toThrow(msg);
+    }
+    expect(applyDefaults({ ...base, perItemMaxCents: 500 }, now).perItemMaxCents).toBe(500);
+  });
+});

@@ -49,7 +49,8 @@ export const approvalStatus = pgEnum("approval_status", ["PENDING", "APPROVED", 
  *   capture_retry    an approved capture PayPal couldn't take yet
  *   capture_pending  PayPal reported the capture PENDING; it can still be declined
  *   void_retry       an authorization that must be released, whose void failed
- *   refund_pending   PayPal accepted the refund but hasn't completed it
+ *   refund_pending   a refund PayPal hasn't finished, or whose answer was lost (no refund id yet)
+ *   needs_review     we can't tell what PayPal did and won't guess; a human checks PayPal (custom_id = purchase id)
  */
 export const recoveryState = pgEnum("recovery_state", [
   "authorizing_vault",
@@ -58,6 +59,7 @@ export const recoveryState = pgEnum("recovery_state", [
   "capture_pending",
   "void_retry",
   "refund_pending",
+  "needs_review",
 ]);
 export const runStatus = pgEnum("run_status", ["RUNNING", "WAITING_APPROVAL", "DONE", "STOPPED", "FAILED"]);
 
@@ -172,7 +174,8 @@ export const products = pgTable(
   ],
 );
 
-export type RunStep = { tool: string; input: unknown; output: unknown; at: string };
+/** purchaseId: the purchase a request_purchase step made, recorded as data so reports never parse it from text. */
+export type RunStep = { tool: string; input: unknown; output: unknown; at: string; purchaseId?: string };
 
 export const agentRuns = pgTable(
   "agent_runs",
@@ -188,6 +191,8 @@ export const agentRuns = pgTable(
     error: text("error"),
     startedAt: ts("started_at").notNull().defaultNow(),
     endedAt: ts("ended_at"),
+    /** Refreshed while the run's process is alive. A live run with a stale heartbeat was orphaned by a restart. */
+    heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
   },
   (t) => [
     index("agent_runs_mandate").on(t.mandateId, t.startedAt.desc()),
@@ -238,6 +243,12 @@ export const purchases = pgTable(
     recoveryAttempts: integer("recovery_attempts").notNull().default(0),
     /** The last PayPal error behind the recovery, for the receipt. */
     recoveryNote: text("recovery_note"),
+    /** The saved PayPal account (paypal_vaults.id) this purchase was authorized with. Crash recovery replays with it, never another. */
+    paypalVaultId: text("paypal_vault_id"),
+    /** Refund attempts that PayPal definitely refused; the next attempt gets a new request id. */
+    refundAttempts: integer("refund_attempts").notNull().default(0),
+    /** Set, with the mandate row locked, once the final re-check passed and the capture may be sent. The kill switch can't recall these. */
+    captureDispatchedAt: ts("capture_dispatched_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

@@ -54,10 +54,15 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
     setSupported(Boolean(w.SpeechRecognition ?? w.webkitSpeechRecognition));
   }, []);
 
-  const say = useCallback((t: string) => {
+  /**
+   * A reply to something the user just said interrupts whatever is playing. An announcement
+   * (a new hold, an agent finishing) queues behind it instead, so "I'm shopping now" isn't cut off
+   * and replayed over by the next line.
+   */
+  const say = useCallback((t: string, opts: { queue?: boolean } = {}) => {
     setLog((l) => [...l.slice(-7), { who: "allowance", text: t }]);
     if (speakRef.current && typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+      if (!opts.queue) window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(t);
       u.rate = 1.05;
       window.speechSynthesis.speak(u);
@@ -67,10 +72,10 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
   useImperativeHandle(ref, () => ({
     announceApproval(a) {
       awaiting.current = { kind: "approval", approvalId: a.id };
-      say(a.prompt);
+      say(a.prompt, { queue: true });
     },
     announce(t) {
-      say(t);
+      say(t, { queue: true });
     },
   }));
 
@@ -108,7 +113,9 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
             break;
           }
           case "confirm": {
-            const r = await tool<{ message: string }>("confirm_mandate", intent.mandateId ? { mandateId: intent.mandateId } : {});
+            const r = await tool<{ message: string; status?: string; mandateId?: string }>("confirm_mandate", intent.mandateId ? { mandateId: intent.mandateId } : {});
+            // No draft in context: the server read one back instead of starting it. A yes starts that one.
+            if (r.status === "NEEDS_CONFIRM" && r.mandateId) awaiting.current = { kind: "confirm", mandateId: r.mandateId };
             say(r.message);
             break;
           }
@@ -118,10 +125,14 @@ export const CommandBar = forwardRef<CommandBarHandle, { onChanged: () => void }
             say("Okay, it's still a draft and nothing will be bought. Say “start now” when you're ready, or tell me what to change.");
             break;
           case "refund": {
-            const r = await tool<{ message: string }>("refund");
+            const r = await tool<{ message: string; status?: string; purchaseId?: string }>("refund", intent.purchaseId ? { purchaseId: intent.purchaseId } : {});
+            if (r.status === "NEEDS_CONFIRM" && r.purchaseId) awaiting.current = { kind: "refund", purchaseId: r.purchaseId };
             say(r.message);
             break;
           }
+          case "cancelled":
+            say("Okay, nothing was refunded.");
+            break;
           case "activity": {
             const r = await tool<{ items: { what: string; status: string }[] }>("list_activity", { limit: 3 });
             say(r.items.length ? r.items.map((i) => `${i.what}: ${i.status}.`).join(" ") : "Nothing yet.");

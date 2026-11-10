@@ -20,7 +20,7 @@
  * the human-readable outcome). The sweep selects on `recovery`, so a note can't reroute a purchase.
  */
 import { appBaseUrl } from "../base-url";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { db, type Conn } from "../db";
 import { agentRuns, approvals, mandates, paypalVaults, products, purchases, type PurchaseRow } from "../db/schema";
 import { AppError, assertHuman } from "../errors";
@@ -40,6 +40,8 @@ const POPUP_TTL_MS = 10 * 60_000;
 /** A vault authorization still RESERVED after this means the process died mid-call. */
 const STUCK_RESERVATION_MS = 2 * 60_000;
 const MAX_CAPTURE_ATTEMPTS = 5;
+/** A capture whose status PayPal keeps reporting as something we don't know is flagged for a human after this many checks. */
+const UNKNOWN_STATUS_CHECKS = 10;
 
 type Status = PurchaseRow["status"];
 type Recovery = NonNullable<PurchaseRow["recovery"]>;
@@ -86,12 +88,22 @@ function paypalFailure(e: unknown) {
 }
 
 /**
- * Did PayPal definitely turn this request down, so that it produced nothing? Only a 400 or
- * 422 says that. Everything else (network error, 401 expired token, 409, 429, 5xx) means
- * "we don't know what happened", and must never be read as "nothing happened".
+ * PayPal error issues that come back as 4xx but do NOT mean "nothing happened": the request
+ * with this PayPal-Request-Id is still being processed, or was already processed.
+ */
+const UNCERTAIN_ISSUES = new Set(["PREVIOUS_REQUEST_IN_PROGRESS", "DUPLICATE_REQUEST_ID", "IDEMPOTENCY_CONFLICT", "INTERNAL_SERVER_ERROR"]);
+
+/**
+ * Did PayPal definitely turn this request down, so that it produced nothing? PayPal documents
+ * 400 (INVALID_REQUEST: the request failed validation) and 422 (UNPROCESSABLE_ENTITY: the
+ * action could not be performed) as "not done". We only believe that when PayPal's own JSON
+ * error body came back and its issue isn't one that means "in progress / already processed".
+ * Everything else (timeout, network error, unreadable body, 401, 409, 429, 5xx) means "we don't
+ * know what happened", and must never be read as "nothing happened".
  */
 function definiteRefusal(e: unknown): boolean {
-  return e instanceof PayPalError && (e.status === 400 || e.status === 422);
+  if (!(e instanceof PayPalError) || (e.status !== 400 && e.status !== 422) || !e.details) return false;
+  return !UNCERTAIN_ISSUES.has(e.issue ?? "");
 }
 
 /** PayPal answered the capture call, and the capture's own status was a refusal. */
@@ -265,7 +277,8 @@ export async function requestPurchase(args: {
 
   // 2. Authorize on PayPal (outside the DB transaction; the reservation already counts toward spend).
   const outcome = await authorize(created.row, created.mandate.userId);
-  if (outcome !== "authorized") return result(created.row.id); // FAILED / VOIDED, or waiting for the buyer popup
+  // FAILED / VOIDED, waiting for the buyer popup, or PayPal's answer unknown (kept RESERVED and reconciled by the sweep)
+  if (outcome !== "authorized") return result(created.row.id);
 
   // 3. Approve -> capture; Hold -> ask a human.
   const after = await loadPurchase(db(), created.row.id);
@@ -277,7 +290,7 @@ export async function requestPurchase(args: {
   return result(after.id);
 }
 
-type AuthorizeOutcome = "authorized" | "awaiting_buyer" | "failed" | "voided";
+type AuthorizeOutcome = "authorized" | "awaiting_buyer" | "failed" | "voided" | "uncertain";
 
 async function authorize(p: PurchaseRow, userId: string): Promise<AuthorizeOutcome> {
   const [vault] = await db()
@@ -286,8 +299,9 @@ async function authorize(p: PurchaseRow, userId: string): Promise<AuthorizeOutco
     .where(and(eq(paypalVaults.userId, userId), eq(paypalVaults.status, "ACTIVE")));
   // Mark first, so a crash mid-call can never leave a "PayPal never called" claim that isn't true.
   // Also record WHICH call, so cleanup after a crash never replays the wrong one.
-  // The vault row id is kept so a crash can be replayed with the same account even if it's unlinked later.
-  await owe(p.id, vault?.paymentTokenId ? "authorizing_vault" : "authorizing_popup", vault?.paymentTokenId ? vault.id : null, { paypalCalled: true });
+  // The vault row is recorded so recovery replays with this exact account, never a different one.
+  const viaVault = !!vault?.paymentTokenId;
+  await owe(p.id, viaVault ? "authorizing_vault" : "authorizing_popup", null, { paypalCalled: true, paypalVaultId: viaVault ? vault!.id : null });
 
   let r;
   try {
@@ -317,8 +331,17 @@ async function authorize(p: PurchaseRow, userId: string): Promise<AuthorizeOutco
       requestId: `${p.id}:authorize`,
     });
   } catch (e) {
-    await fail(p, e);
-    return "failed";
+    // An order for the popup holds no money until the buyer approves it, so a failure there is
+    // always safe to release. A saved-account authorization is different: if PayPal may have
+    // created it (timeout, 5xx, lost or unreadable response), keep the reservation, its budget,
+    // the account and the request id, and let releaseStaleReservations replay the same request.
+    if (!viaVault || definiteRefusal(e)) {
+      await fail(p, e);
+      return "failed";
+    }
+    const f = paypalFailure(e);
+    await owe(p.id, "authorizing_vault", `PayPal's answer was lost or unclear: ${f.reason}`, { paypalDebugId: f.debugId });
+    return "uncertain";
   }
   if (!r.authorizationId) {
     await fail(p, new Error(`No authorization returned (order ${r.orderStatus})`));
@@ -427,8 +450,27 @@ export async function cancelFallbackPurchase(purchaseId: string, actor: string):
 // ---------- capture / void / refund ----------
 
 /** Final re-check before capture on the auto-approve path (full engine, mandate locked). */
+/**
+ * Claim the right to send the capture, in the same transaction (mandate row locked) as the
+ * re-check that allowed it. The kill switch takes the same lock, so exactly one of these holds:
+ *   - the freeze committed first: the re-check sees FROZEN and nothing is captured, or
+ *   - the claim committed first: the freeze sees it and reports the capture as already in flight.
+ * A capture PayPal has been sent can't be recalled; this boundary is the honest one.
+ */
+async function claimCapture(tx: Conn, purchaseId: string): Promise<boolean> {
+  const [row] = await tx
+    .update(purchases)
+    .set({ captureDispatchedAt: new Date() })
+    .where(and(eq(purchases.id, purchaseId), inArray(purchases.status, ["AUTHORIZED", "HELD"])))
+    .returning({ id: purchases.id });
+  return !!row;
+}
+
 async function captureAfterRecheck(p: PurchaseRow, actor: string) {
-  const check = await inTransaction((tx) => recheck(tx, p, p.mandateVersion, new Date()));
+  const check = await inTransaction(async (tx) => {
+    const c = await recheck(tx, p, p.mandateVersion, new Date());
+    return c.ok && !(await claimCapture(tx, p.id)) ? { ...c, ok: false, problem: "purchase was released meanwhile" } : c;
+  });
   if (!check.ok) return voidPurchase(p.id, actor, `re-check failed: ${check.problem}`).catch(() => null);
   return capture(p.id, actor);
 }
@@ -496,13 +538,13 @@ async function settleFromPayPal(p: PurchaseRow, actor: string, reason: string, k
 /** PayPal confirmed a capture: record it, whatever it takes. Never mark this purchase FAILED. */
 async function recordCapture(p: PurchaseRow, r: { captureId: string; status: string }, actor: string) {
   await persistently(async () => {
-    const pending = r.status === "PENDING";
+    const pending = r.status !== "COMPLETED";
     const set: Partial<PurchaseRow> = {
       paypalCaptureId: r.captureId,
       failureReason: null,
       recovery: pending ? "capture_pending" : null,
       recoveryAttempts: 0,
-      recoveryNote: pending ? "PayPal reported the capture PENDING; it can still be declined" : null,
+      recoveryNote: pending ? `PayPal reported the capture ${r.status}; it can still be declined` : null,
     };
     const row = await transition(db(), p.id, ["AUTHORIZED", "HELD"], "CAPTURED", set);
     if (!row) {
@@ -544,9 +586,10 @@ async function capture(purchaseId: string, actor: string) {
       .captureAuthorization({ authorizationId, requestId: `${p.id}:capture` })
       .catch(() => gateway().captureAuthorization({ authorizationId, requestId: `${p.id}:capture` }));
     // A 2xx isn't enough: PayPal reports the capture's own status.
-    //   COMPLETED -> money moved.  PENDING -> committed but not settled (e.g. review); recorded, flagged,
-    //   and re-checked by reconcile().  DECLINED / FAILED / anything else -> no money moved.
-    if (r.status !== "COMPLETED" && r.status !== "PENDING") {
+    //   COMPLETED -> money moved.  DECLINED / FAILED -> PayPal says no money moved.
+    //   PENDING or a status we don't know -> may still take money: recorded as CAPTURED (so it keeps
+    //   counting as spend), flagged capture_pending and re-checked by the sweep. Never assumed done.
+    if (r.status === "DECLINED" || r.status === "FAILED") {
       throw new CaptureRefused(`PayPal capture ${r.captureId} was ${r.status}`);
     }
   } catch (e) {
@@ -623,25 +666,67 @@ export async function voidPurchase(purchaseId: string, actor: string, reason: st
   return row ?? (await loadPurchase(db(), p.id));
 }
 
+/**
+ * The PayPal-Request-Id for this purchase's current refund attempt. Replaying the same attempt
+ * (a lost or unclear answer) reuses it, so PayPal returns the refund it already made instead of
+ * making another. Only after PayPal definitely refused or failed a refund does the next attempt
+ * get a new id. Attempt 0 keeps the original id format, so older rows replay correctly.
+ */
+const refundRequestId = (p: PurchaseRow) => (p.refundAttempts ? `${p.id}:refund:${p.refundAttempts}` : `${p.id}:refund`);
+
+/**
+ * Refunds are always the full capture. That is a second guard against a duplicate: PayPal
+ * refuses to refund a capture that is already fully refunded.
+ */
 export async function refundPurchase(purchaseId: string, actor: string, reason?: string): Promise<PurchaseRow> {
   assertHuman(actor);
   const p = await loadPurchase(db(), purchaseId);
   if (p.status !== "CAPTURED" || !p.paypalCaptureId) throw new AppError("INVALID_STATE", `Can't refund a ${p.status} purchase`);
+  // PayPal can't refund a capture that hasn't settled, and two open questions on one purchase
+  // (is the capture real? is the refund?) can't be tracked safely. Wait for the capture first.
+  if (p.recovery === "capture_pending") {
+    throw new AppError("INVALID_STATE", "PayPal hasn't settled this capture yet. Refund it once it completes; if PayPal declines it, it's released on its own.");
+  }
+  if (p.recovery === "refund_pending" && p.paypalRefundId) {
+    // A refund already exists and is pending: ask about it, never start another.
+    const r = await gateway().getRefund(p.paypalRefundId).catch(() => null);
+    if (!r) throw new AppError("PAYPAL_ERROR", `Refund ${p.paypalRefundId} is pending; PayPal couldn't be reached to check it`);
+    return settleRefund(p, r, actor, reason ?? null);
+  }
+  return sendRefund(p, actor, reason ?? null);
+}
+
+async function sendRefund(p: PurchaseRow, actor: string, reason: string | null): Promise<PurchaseRow> {
   let refund;
   try {
-    refund = await gateway().refundCapture({ captureId: p.paypalCaptureId, requestId: `${p.id}:refund`, note: reason });
+    refund = await gateway().refundCapture({ captureId: p.paypalCaptureId!, requestId: refundRequestId(p), note: reason ?? undefined });
   } catch (e) {
     const f = paypalFailure(e);
-    throw new AppError("PAYPAL_ERROR", `Refund failed: ${f.reason}`, { paypalDebugId: f.debugId });
+    if (definiteRefusal(e)) {
+      // Nothing was refunded. The next attempt is a new refund, so it gets a new request id.
+      await db()
+        .update(purchases)
+        .set({ refundAttempts: p.refundAttempts + 1, ...(p.recovery === "refund_pending" ? { recovery: null, recoveryNote: null } : {}), updatedAt: new Date() })
+        .where(and(eq(purchases.id, p.id), eq(purchases.status, "CAPTURED")));
+      throw new AppError("PAYPAL_ERROR", `Refund failed: ${f.reason}`, { paypalDebugId: f.debugId });
+    }
+    // We don't know whether PayPal refunded it. Keep the same request id and let the sweep replay it.
+    await db()
+      .update(purchases)
+      .set({ recovery: "refund_pending", recoveryNote: `refund outcome unknown, will re-ask PayPal: ${f.reason}`, paypalDebugId: f.debugId, updatedAt: new Date() })
+      .where(and(eq(purchases.id, p.id), eq(purchases.status, "CAPTURED")));
+    await recordEvent(db(), { actor, type: "purchase.refund_pending", mandateId: p.mandateId, purchaseId: p.id, data: { refundId: null, reason, unknownOutcome: true } });
+    throw new AppError("PAYPAL_ERROR", `PayPal didn't confirm the refund (${f.reason}). It's being checked; don't refund it again elsewhere.`, { paypalDebugId: f.debugId });
   }
-  return settleRefund(p, refund, actor, reason ?? null);
+  return settleRefund(p, refund, actor, reason);
 }
 
 /**
  * A 2xx from the refund call isn't the end: PayPal reports the refund's own status.
  *   COMPLETED          -> REFUNDED (the budget is freed)
  *   PENDING            -> still CAPTURED (still counts as spend), flagged refund_pending; the sweep asks again
- *   FAILED / CANCELLED -> still CAPTURED; the caller hears that the refund didn't go through
+ *   FAILED / CANCELLED -> still CAPTURED; the caller hears that the refund didn't go through, and the
+ *                         next attempt gets a new request id
  */
 async function settleRefund(p: PurchaseRow, refund: { refundId: string; status: string }, actor: string, reason: string | null): Promise<PurchaseRow> {
   const { refundId, status } = refund;
@@ -659,32 +744,51 @@ async function settleRefund(p: PurchaseRow, refund: { refundId: string; status: 
         .set({ paypalRefundId: refundId, recovery: "refund_pending", recoveryNote: `PayPal refund ${refundId} is PENDING`, updatedAt: new Date() })
         .where(and(eq(purchases.id, p.id), eq(purchases.status, "CAPTURED"))),
     );
-    await recordEvent(db(), { actor, type: "purchase.refund_pending", mandateId: p.mandateId, purchaseId: p.id, data: { refundId, reason } });
+    if (p.recovery !== "refund_pending") {
+      await recordEvent(db(), { actor, type: "purchase.refund_pending", mandateId: p.mandateId, purchaseId: p.id, data: { refundId, reason } });
+    }
     return loadPurchase(db(), p.id);
   }
-  if (p.recovery === "refund_pending") {
-    await db()
-      .update(purchases)
-      .set({ recovery: null, recoveryNote: null, updatedAt: new Date() })
-      .where(and(eq(purchases.id, p.id), eq(purchases.status, "CAPTURED"), eq(purchases.recovery, "refund_pending")));
-  }
+  await db()
+    .update(purchases)
+    .set({ refundAttempts: p.refundAttempts + 1, paypalRefundId: null, ...(p.recovery === "refund_pending" ? { recovery: null, recoveryNote: null } : {}), updatedAt: new Date() })
+    .where(and(eq(purchases.id, p.id), eq(purchases.status, "CAPTURED")));
   await recordEvent(db(), { actor, type: "purchase.refund_failed", mandateId: p.mandateId, purchaseId: p.id, data: { refundId, status } });
   throw new AppError("PAYPAL_ERROR", `PayPal refund ${refundId} was ${status}; nothing was refunded`);
 }
 
-/** Ask PayPal again about refunds it reported PENDING. Returns how many are now finished. */
+/**
+ * Finish refunds PayPal hasn't confirmed. With a refund id: ask about that refund. Without one
+ * (the answer was lost): first ask the capture; if PayPal shows it REFUNDED, record that, and
+ * otherwise replay the same refund request (same request id, so it can't refund twice).
+ * Returns how many are now finished.
+ */
 export async function recheckPendingRefunds(): Promise<number> {
   const rows = await db()
     .select()
     .from(purchases)
-    .where(and(eq(purchases.status, "CAPTURED"), eq(purchases.recovery, "refund_pending"), isNotNull(purchases.paypalRefundId)));
+    .where(and(eq(purchases.status, "CAPTURED"), eq(purchases.recovery, "refund_pending")));
   let settled = 0;
   await inBatches(
     rows.filter((p) => due(p.id)),
     async (p) => {
-      const r = await gateway().getRefund(p.paypalRefundId!).catch(() => null);
-      if (!r || r.status === "PENDING") return retryLater(p.id);
-      const after = await settleRefund(p, r, "system", "refund completed at PayPal").catch(() => null);
+      let after: PurchaseRow | null;
+      if (p.paypalRefundId) {
+        const r = await gateway().getRefund(p.paypalRefundId).catch(() => null);
+        if (!r || r.status === "PENDING") return retryLater(p.id);
+        after = await settleRefund(p, r, "system", "refund finished at PayPal").catch(() => null);
+      } else {
+        const c = await gateway().getCapture(p.paypalCaptureId!).catch(() => null);
+        if (!c) return retryLater(p.id);
+        if (c.status === "REFUNDED") {
+          after = await transition(db(), p.id, ["CAPTURED"], "REFUNDED", { failureReason: null });
+          if (after) await recordEvent(db(), { actor: "system", type: "purchase.refunded", mandateId: p.mandateId, purchaseId: p.id, data: { reason: "PayPal shows the capture refunded" } });
+        } else {
+          await sendRefund(p, "system", null).catch(() => null);
+          after = await loadPurchase(db(), p.id);
+          if (after.recovery === "refund_pending" && !after.paypalRefundId) return retryLater(p.id); // still unknown
+        }
+      }
       settledNow(p.id);
       if (after?.status === "REFUNDED" || after === null) settled++;
     },
@@ -712,9 +816,13 @@ async function createHold(
   });
   const approvalId = id("apr");
   const expiresAt = new Date(Date.now() + APPROVAL_TTL_MS);
-  await inTransaction(async (tx) => {
+  const stopped = await inTransaction(async (tx) => {
+    // Lock the mandate like the kill switch does: never open an approval on a mandate that was
+    // frozen (or cancelled) while PayPal was authorizing. Asking the user would be pointless.
+    const [mm] = await tx.select({ status: mandates.status }).from(mandates).where(eq(mandates.id, p.mandateId)).for("update");
+    if (mm?.status !== "ACTIVE") return mm?.status ?? "missing";
     const row = await transition(tx, p.id, ["AUTHORIZED"], "HELD");
-    if (!row) return; // moved by someone else (e.g. kill switch): no hold
+    if (!row) return null; // moved by someone else (e.g. kill switch): no hold
     await tx.insert(approvals).values({
       id: approvalId,
       purchaseId: p.id,
@@ -736,7 +844,9 @@ async function createHold(
       purchaseId: p.id,
       data: { approvalId, prompt, expiresAt: expiresAt.toISOString(), requestedBy: p.requestedBy },
     });
+    return null;
   });
+  if (stopped) await voidPurchase(p.id, "system", `mandate is ${stopped}`).catch(() => null); // a failed void is retried by the sweep
 }
 
 export type DecisionOutcome = { approval: PublicApproval; purchase: PurchaseRow; alreadyDecided: boolean; note?: string };
@@ -793,6 +903,7 @@ export async function decideApproval(args: {
       data: { approvalId: a.id, decision: "approve", recheck: check.results, versionChanged: check.versionChanged },
     });
     if (!check.ok) return { kind: "void" as const, a, reason: `re-check failed: ${check.problem}` };
+    if (!(await claimCapture(tx, p.id))) return { kind: "void" as const, a, reason: "purchase was released meanwhile" };
     return { kind: "capture" as const, a };
   });
 
@@ -955,12 +1066,28 @@ async function releaseAbandonedPopup(p: PurchaseRow): Promise<boolean> {
     // CREATED / PENDING still hold the buyer's funds: adopt and void. VOIDED, DENIED and EXPIRED hold nothing.
     const open = auths.find((a) => a.status === "CREATED" || a.status === "PENDING");
     const live = captured ?? open;
+    if (captured) {
+      // Money moved. Record it only once we hold the capture id, in one step from RESERVED, so the
+      // purchase never sits AUTHORIZED outside every sweep. Until then it stays RESERVED (still
+      // counted as spend) and this runs again with backoff.
+      const caps = await gateway().getOrderCaptures(p.paypalOrderId).catch(() => null);
+      const c = caps?.find((x) => x.status === "COMPLETED") ?? caps?.find((x) => x.status !== "DECLINED" && x.status !== "FAILED");
+      if (!c) return false;
+      const pending = c.status !== "COMPLETED";
+      const row = await transition(db(), p.id, ["RESERVED"], "CAPTURED", {
+        paypalOrderId: p.paypalOrderId,
+        paypalAuthorizationId: captured.authorizationId,
+        paypalCaptureId: c.captureId,
+        recovery: pending ? "capture_pending" : null,
+        recoveryNote: pending ? `PayPal reported the capture ${c.status}` : null,
+      });
+      if (row) {
+        await recordEvent(db(), { actor: "system", type: "purchase.captured", mandateId: p.mandateId, purchaseId: p.id, data: { captureId: c.captureId, captureStatus: c.status, recoveredAfterCrash: true } });
+      }
+      return true;
+    }
     if (live) {
       if (!(await markAuthorized(p, p.paypalOrderId, live.authorizationId))) return true;
-      if (captured) {
-        const after = await loadPurchase(db(), p.id);
-        return (await settleFromPayPal(after, "system", "PayPal checkout finished while we were down")) !== null;
-      }
       const v = await voidPurchase(p.id, "system", "PayPal checkout was never completed").catch(() => null);
       return v !== null; // a failed void is now tracked by retryOpenVoids
     }
@@ -987,22 +1114,22 @@ async function releaseStuckAuthorization(p: PurchaseRow, userId: string): Promis
     await fail(p, new Error(p.paypalCalled ? "PayPal checkout was never started" : reason), ["RESERVED"]);
     return true;
   }
-  // Replay with the account the call was made with, even if it was unlinked since: unlinking
-  // only marks our row REVOKED, and PayPal replays a cached answer for the same request id.
-  // (Rows from before the vault id was recorded fall back to the user's latest account.)
-  const [vault] = p.recoveryNote?.startsWith("vlt_")
-    ? await db().select().from(paypalVaults).where(eq(paypalVaults.id, p.recoveryNote))
-    : await db()
-        .select()
-        .from(paypalVaults)
-        .where(and(eq(paypalVaults.userId, userId), isNotNull(paypalVaults.paymentTokenId)))
-        .orderBy(desc(paypalVaults.updatedAt))
-        .limit(1);
+  // Replay with exactly the account the call was made with, even if it was unlinked since:
+  // unlinking only marks our row REVOKED, and PayPal replays its answer for the same request id.
+  // Never substitute another account: that would authorize a different payer.
+  void userId;
+  const [vault] = p.paypalVaultId ? await db().select().from(paypalVaults).where(eq(paypalVaults.id, p.paypalVaultId)) : [];
   if (!vault?.paymentTokenId) {
-    // No account to replay with, ever. We never learned an authorization id, so nothing can
-    // be captured from this purchase: release its budget and order slot rather than block the
-    // mandate forever. Any hold PayPal did make lapses on its own.
-    await fail(p, new Error(`${reason}; the saved PayPal account is gone, so no charge can follow`), ["RESERVED"]);
+    // We don't know which account was used (a row from before that was recorded) or it's gone.
+    // We never learned an authorization id, so nothing can ever be captured from this purchase:
+    // release its budget and order slot rather than block the mandate forever, and flag it so a
+    // human checks PayPal for a stray hold (it lapses on its own if left).
+    const row = await transition(db(), p.id, ["RESERVED"], "FAILED", {
+      failureReason: `${reason}; can't tell which PayPal account was used, so nothing was replayed and nothing can be charged`,
+      recovery: "needs_review",
+      recoveryNote: `Check PayPal for an authorization with custom_id ${p.id}; void it if present`,
+    });
+    if (row) await recordEvent(db(), { actor: "system", type: "purchase.failed", mandateId: p.mandateId, purchaseId: p.id, data: { reason: row.failureReason, needsReview: true } });
     return true;
   }
   let r;
@@ -1085,7 +1212,17 @@ export async function recheckPendingCaptures(): Promise<number> {
           await recordEvent(db(), { actor: "system", type: "purchase.refunded", mandateId: p.mandateId, purchaseId: p.id, data: { reason: "refunded at PayPal", captureId: c.captureId } });
         }
       } else {
-        return; // a status we don't know: leave it flagged
+        // A status we don't know. It stays CAPTURED (counted as spend) and is asked again with
+        // backoff. After UNKNOWN_STATUS_CHECKS answers like this, stop guessing: flag it for a human.
+        const checks = p.recoveryAttempts + 1;
+        if (checks >= UNKNOWN_STATUS_CHECKS) {
+          await set({ recovery: "needs_review", recoveryAttempts: checks, recoveryNote: `PayPal keeps reporting capture ${c.captureId} as ${c.status}; check it in PayPal` });
+          settledNow(p.id);
+        } else {
+          await set({ recoveryAttempts: checks, recoveryNote: `PayPal reported capture ${c.captureId} as ${c.status}` });
+          retryLater(p.id);
+        }
+        return;
       }
       settledNow(p.id);
       settled++;
@@ -1121,9 +1258,9 @@ export async function cancelHold(purchaseId: string, actor: string, reason: stri
  * direction, so any actor (including MCP agents) may call it. A void that fails here
  * is retried by reconcile().
  */
-export async function freezeAll(args: { actor: string; userId: string }): Promise<{ frozen: number; voided: number }> {
+export async function freezeAll(args: { actor: string; userId: string }): Promise<{ frozen: number; voided: number; inFlight: number }> {
   const now = new Date();
-  const { frozenIds, purchaseIds } = await inTransaction(async (tx) => {
+  const { frozenIds, purchaseIds, inFlight } = await inTransaction(async (tx) => {
     const frozen = await tx
       .update(mandates)
       .set({ status: "FROZEN", frozenAt: now, updatedAt: now })
@@ -1131,7 +1268,7 @@ export async function freezeAll(args: { actor: string; userId: string }): Promis
       .returning({ id: mandates.id });
     const frozenIds = frozen.map((f) => f.id);
     for (const f of frozenIds) await recordEvent(tx, { actor: args.actor, type: "mandate.frozen", mandateId: f });
-    if (!frozenIds.length) return { frozenIds, purchaseIds: [] as string[] };
+    if (!frozenIds.length) return { frozenIds, purchaseIds: [] as string[], inFlight: 0 };
 
     const cancelled = await tx
       .update(approvals)
@@ -1150,7 +1287,17 @@ export async function freezeAll(args: { actor: string; userId: string }): Promis
       .update(agentRuns)
       .set({ status: "STOPPED", endedAt: now })
       .where(and(inArray(agentRuns.mandateId, frozenIds), inArray(agentRuns.status, ["RUNNING", "WAITING_APPROVAL"])));
-    return { frozenIds, purchaseIds: cancelled.map((c) => c.purchaseId) };
+    // Auto-approved purchases holding money that haven't been cleared to capture yet (and approved
+    // captures PayPal couldn't take, waiting for a retry): release those too. The mandate rows are
+    // locked by the UPDATE above, so no new capture claim can appear while we look.
+    const open = await tx
+      .select({ id: purchases.id, dispatched: purchases.captureDispatchedAt, recovery: purchases.recovery, status: purchases.status })
+      .from(purchases)
+      .where(and(inArray(purchases.mandateId, frozenIds), inArray(purchases.status, ["AUTHORIZED", "HELD"])));
+    const release = open.filter((o) => o.status === "AUTHORIZED" && (!o.dispatched || o.recovery === "capture_retry")).map((o) => o.id);
+    // Cleared to capture before the freeze: PayPal may already be taking the money. Not recallable.
+    const inFlight = open.filter((o) => o.dispatched && o.recovery !== "capture_retry" && o.recovery !== "void_retry").length;
+    return { frozenIds, purchaseIds: [...new Set([...cancelled.map((c) => c.purchaseId), ...release])], inFlight };
   });
 
   let voided = 0;
@@ -1158,7 +1305,7 @@ export async function freezeAll(args: { actor: string; userId: string }): Promis
     const p = await voidPurchase(pid, args.actor, "kill switch").catch(() => null);
     if (p?.status === "VOIDED") voided++;
   }
-  return { frozen: frozenIds.length, voided };
+  return { frozen: frozenIds.length, voided, inFlight };
 }
 
 /**

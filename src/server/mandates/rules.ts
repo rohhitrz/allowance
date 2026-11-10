@@ -43,9 +43,24 @@ const DAY = 86_400_000;
 
 /** docs/02-system-design.md §3.3 */
 export function applyDefaults(d: MandateDraftInput, opts: { now: Date; timezone: string }): ResolvedMandate {
-  if (!Number.isInteger(d.budgetCents) || d.budgetCents <= 0) throw new Error("Budget must be a positive amount");
-  const hardLimit = d.hardLimitCents ?? Math.round(d.budgetCents * 1.2);
+  // Money is whole cents and must be positive. Checked here because the values come from a model
+  // (or an MCP client), never trusted as-is.
+  const MAX_CENTS = 100_000_00; // $100,000: far above any demo mandate, keeps totals well inside int4
+  const cents = (v: number, label: string) => {
+    if (!Number.isInteger(v) || v <= 0) throw new Error(`${label} must be a positive amount in whole cents`);
+    if (v > MAX_CENTS) throw new Error(`${label} is too large (at most $100,000)`);
+    return v;
+  };
+  const whole = (v: number | null, label: string) => {
+    if (v !== null && (!Number.isInteger(v) || v < 1 || v > 1000)) throw new Error(`${label} must be a whole number from 1 to 1000`);
+    return v;
+  };
+  cents(d.budgetCents, "Budget");
+  const hardLimit = cents(d.hardLimitCents ?? Math.round(d.budgetCents * 1.2), "Hard limit");
   if (hardLimit < d.budgetCents) throw new Error("Hard limit can't be below the budget");
+  if (d.perItemMaxCents !== null) cents(d.perItemMaxCents, "Per-item maximum");
+  whole(d.maxOrders, "Max orders");
+  whole(d.maxQuantity, "Max quantity");
 
   let expiresAt: Date | null = d.expiresAt ? new Date(d.expiresAt) : null;
   if (expiresAt && Number.isNaN(expiresAt.getTime())) throw new Error("Bad expiry date");

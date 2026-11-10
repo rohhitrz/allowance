@@ -6,6 +6,7 @@ import { Ledger, type LedgerHandle } from "./Ledger";
 import { ApprovalCard, Feed, MandateCard } from "./Panels";
 import { ReceiptDrawer } from "./ReceiptDrawer";
 import { RedTeamReport } from "./RedTeamReport";
+import { speakOnce } from "./speakOnce";
 import type { Approval, Event, Mandate, Purchase, Run } from "./types";
 import { BrandMark, Button, SectionTitle } from "./ui";
 
@@ -127,11 +128,11 @@ export function Dashboard() {
         const prompt = String(e.data.prompt ?? "");
         const id = String(e.data.approvalId ?? "");
         // A red-team probe's hold is released at once; there is nothing for the user to answer.
-        if (prompt && id && e.data.requestedBy !== "agent:redteam") voice.current?.announceApproval({ id, prompt } as Approval);
+        if (prompt && id && e.data.requestedBy !== "agent:redteam") speakOnce(e.id, () => voice.current?.announceApproval({ id, prompt } as Approval));
       }
       // Tell the user how a run ended (only live events, not ones replayed after a reconnect).
       if (e.type === "run.finished" && e.data.summary && Date.now() - new Date(e.at).getTime() < 30_000) {
-        voice.current?.announce(String(e.data.summary));
+        speakOnce(e.id, () => voice.current?.announce(String(e.data.summary)));
       }
       if (e.type === "vault.linked") api<{ linked: boolean }>("/api/paypal/vault").then(setVault);
       schedule();
@@ -164,8 +165,9 @@ export function Dashboard() {
   const freeze = async () => {
     setFreezing(true);
     try {
-      const r = await api<{ frozen: number; voided: number }>("/api/freeze-all", { body: {} });
-      flash(`Stopped. ${r.frozen} mandate(s) frozen, ${r.voided} hold(s) voided.`, "info");
+      const r = await api<{ frozen: number; voided: number; inFlight?: number }>("/api/freeze-all", { body: {} });
+      const late = r.inFlight ? ` ${r.inFlight} payment(s) were already being charged and can't be recalled; refund them from the receipt if needed.` : "";
+      flash(`Stopped. ${r.frozen} mandate(s) frozen, ${r.voided} hold(s) voided.${late}`, "info");
     } catch (e) {
       flash((e as Error).message);
     } finally {

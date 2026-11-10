@@ -93,3 +93,12 @@ d2("stop commands with an object", () => {
     for (const t of ["freeze-dried strawberries under $20", "Stop and Shop gift card", "a rubber door stop"]) e2(stop2(t)).toBe(false);
   });
 });
+
+d2("refund needs an explicit yes for a named purchase", () => {
+  i2("after 'refund X?', only a yes refunds that purchase; anything else refunds nothing", async () => {
+    const { interpret: interp } = await import("./intent");
+    e2(interp("yes", { kind: "refund", purchaseId: "pur_1" })).toEqual({ kind: "refund", purchaseId: "pur_1" });
+    e2(interp("no, the other one", { kind: "refund", purchaseId: "pur_1" })).toEqual({ kind: "cancelled", what: "refund" });
+    e2(interp("return it", null)).toEqual({ kind: "refund" }); // no id: the server asks, never guesses
+  });
+});

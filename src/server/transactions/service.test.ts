@@ -6,11 +6,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { sql, eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { closeDb, db } from "../db";
-import { agentRuns, events, paypalVaults, purchases } from "../db/schema";
+import { agentRuns, events, mandates as mandatesTable, paypalVaults, purchases } from "../db/schema";
 import { bus, inTransaction, recordEvent } from "../events/bus";
 import { listApprovals } from "../app";
 import { auditMandate } from "../audit";
-import { RED_TEAM_ACTOR, RED_TEAM_BRIEF, redTeamReport } from "../agent/redteam";
+import { RED_TEAM_ACTOR, RED_TEAM_BRIEF, redTeamReport, releaseMessage } from "../agent/redteam";
+import { recoverStaleRuns } from "../agent/runner";
 import { runVoiceTool } from "../voice/tools";
 import { runDemoStep } from "../demo/script";
 import { POST as vapiTools } from "../../app/api/voice/tools/route";
@@ -87,6 +88,10 @@ const fake: PaymentGateway = {
 };
 
 const ops = () => calls.map((c) => c.op);
+
+/** A refusal as PayPal really sends it: a 4xx with its JSON error body. */
+const refusal = (issue: string, status = 422) =>
+  new PayPalError(`POST failed (${status}): ${issue}`, status, "dbg", { name: status === 400 ? "INVALID_REQUEST" : "UNPROCESSABLE_ENTITY", details: [{ issue }] });
 
 async function giftMandate(over: Partial<{ maxOrders: number; hardLimitCents: number }> = {}) {
   const { mandate } = await createDraft({
@@ -201,7 +206,7 @@ suite("transaction service", () => {
     const m = await giftMandate();
     await buy(m.id, HEADPHONES_ID);
     const res = await freezeAll({ actor: "user:voice", userId: "usr_demo" });
-    expect(res).toEqual({ frozen: 2, voided: 1 }); // gift + seeded grocery mandate
+    expect(res).toEqual({ frozen: 2, voided: 1, inFlight: 0 }); // gift + seeded grocery mandate
     calls = [];
     const retry = await buy(m.id, CANDLE_SET_ID);
     expect(retry.purchase.status).toBe("BLOCKED");
@@ -252,13 +257,13 @@ suite("transaction service", () => {
     await expect(db().execute(sql`UPDATE mandates SET blocked_categories = ARRAY['crypto'] WHERE id = ${m.id}`)).rejects.toThrow();
   });
 
-  it("PayPal failure marks FAILED and releases the reservation", async () => {
+  it("a definite PayPal refusal marks FAILED and releases the reservation", async () => {
     const m = await giftMandate();
-    setGateway({ ...fake, authorizeWithVault: async () => Promise.reject(new Error("sandbox down")) });
+    setGateway({ ...fake, authorizeWithVault: async () => Promise.reject(refusal("INSTRUMENT_DECLINED")) });
     try {
       const r = await buy(m.id, CANDLE_SET_ID);
       expect(r.purchase.status).toBe("FAILED");
-      expect(r.purchase.failureReason).toBe("sandbox down");
+      expect(r.purchase.failureReason).toMatch(/INSTRUMENT_DECLINED/);
     } finally {
       setGateway(fake);
     }
@@ -316,7 +321,7 @@ suite("transaction service", () => {
     const m = await giftMandate();
     setGateway({
       ...fake,
-      captureAuthorization: async () => Promise.reject(new PayPalError("capture declined", 422)),
+      captureAuthorization: async () => Promise.reject(refusal("CAPTURE_DECLINED")),
       voidAuthorization: async () => Promise.reject(new Error("void timeout")),
     });
     let pid: string;
@@ -524,7 +529,7 @@ suite("transaction service", () => {
       },
       async voidAuthorization(args) {
         calls.push({ op: "void", args });
-        throw new PayPalError("AUTHORIZATION_ALREADY_CAPTURED", 422);
+        throw refusal("AUTHORIZATION_ALREADY_CAPTURED");
       },
       getAuthorization: async (id) => ({ id, status: "CAPTURED", amount: { value: "89.99" } }),
       getOrderCaptures: async () => [{ captureId: "CAP_LOST", status: "COMPLETED" }],
@@ -546,7 +551,7 @@ suite("transaction service", () => {
     const lost: PaymentGateway = {
       ...fake,
       captureAuthorization: async () => Promise.reject(new Error("socket hang up")),
-      voidAuthorization: async () => Promise.reject(new PayPalError("AUTHORIZATION_ALREADY_CAPTURED", 422)),
+      voidAuthorization: async () => Promise.reject(refusal("AUTHORIZATION_ALREADY_CAPTURED")),
       getAuthorization: async (id) => ({ id, status: "CAPTURED", amount: { value: "89.99" } }),
       getOrderCaptures: async () => Promise.reject(new Error("timeout")),
     };
@@ -572,7 +577,7 @@ suite("transaction service", () => {
     const held = await buy(m.id, HEADPHONES_ID);
     setGateway({
       ...fake,
-      voidAuthorization: async () => Promise.reject(new PayPalError("AUTHORIZATION_VOIDED", 422)),
+      voidAuthorization: async () => Promise.reject(refusal("AUTHORIZATION_VOIDED")),
       getAuthorization: async (id) => ({ id, status: "VOIDED", amount: { value: "170.00" } }),
     });
     try {
@@ -627,7 +632,7 @@ suite("transaction service", () => {
       await releaseStaleReservations(later);
       expect(asked).toBe(0);
       clearSweepBackoff();
-      setGateway({ ...fake, authorizeWithVault: async () => Promise.reject(new PayPalError("INSTRUMENT_DECLINED", 422)) });
+      setGateway({ ...fake, authorizeWithVault: async () => Promise.reject(refusal("INSTRUMENT_DECLINED")) });
       expect(await releaseStaleReservations(later)).toBe(1);
       expect((await row(stuck.id)).status).toBe("FAILED");
     } finally {
@@ -744,7 +749,7 @@ suite("transaction service", () => {
     await db().update(paypalVaults).set({ status: "REVOKED" });
     const m = await giftMandate();
     const r = await buy(m.id, CANDLE_SET_ID);
-    setGateway({ ...fake, authorizeOrder: async () => Promise.reject(new PayPalError("POST /authorize failed (422): ORDER_NOT_APPROVED", 422)) });
+    setGateway({ ...fake, authorizeOrder: async () => Promise.reject(refusal("ORDER_NOT_APPROVED")) });
     try {
       await expect(completeFallbackAuthorization(r.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "INVALID_STATE" });
       expect((await row(r.purchase.id)).status).toBe("RESERVED");
@@ -1039,7 +1044,7 @@ suite("transaction service", () => {
     expect(await releaseStaleReservations(new Date(Date.now() + 3 * 60_000))).toBe(1);
     const [p] = await db().select().from(purchases).where(eq(purchases.mandateId, m.id));
     expect(p.status).toBe("FAILED");
-    expect(p.recovery).toBeNull();
+    expect(p.recovery).toBe("needs_review"); // a human checks PayPal; nothing was replayed
   });
 
   it("an abandoned popup whose authorization already EXPIRED is just released, never voided", async () => {
@@ -1127,5 +1132,304 @@ suite("transaction service", () => {
     const [a, b] = await Promise.all([req(), req()]);
     expect(a.purchase.id).toBe(b.purchase.id);
     expect(ops().filter((o) => o === "capture")).toHaveLength(1);
+  });
+
+  // ---------- sixth review: payment outcome and recovery ----------
+
+  /** A promise the test resolves by hand, to hold a PayPal call open. */
+  function gate<T>() {
+    let open!: (v: T) => void;
+    const p = new Promise<T>((r) => (open = r));
+    return { p, open };
+  }
+
+  it("an authorize whose answer is lost, timed out, 5xx, in progress or unreadable keeps the reservation and is replayed, never re-created", async () => {
+    const outcomes: [string, unknown][] = [
+      ["lost after success", new Error("socket hang up")],
+      ["timeout", Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })],
+      ["5xx", new PayPalError("INTERNAL_SERVER_ERROR", 500)],
+      ["in progress", refusal("PREVIOUS_REQUEST_IN_PROGRESS")],
+      ["unreadable 201 body", new PayPalError("POST /v2/checkout/orders returned an unreadable body (201): <html>", 201)],
+    ];
+    for (const [label, err] of outcomes) {
+      await resetDemo({ vault: { vaultId: "VAULT_TEST", payerEmail: "buyer@example.com" } });
+      clearSweepBackoff();
+      const m = await giftMandate();
+      setGateway({ ...fake, authorizeWithVault: async (args) => (calls.push({ op: "authorize", args }), Promise.reject(err)) });
+      calls = [];
+      const r = await buy(m.id, CANDLE_SET_ID);
+      expect(r.purchase.status, label).toBe("RESERVED");
+      expect(r.purchase.recovery, label).toBe("authorizing_vault");
+      // Its budget and order slot are still held: the mandate's one order is taken.
+      expect((await buy(m.id, HEADPHONES_ID)).purchase.status, label).toBe("BLOCKED");
+      setGateway(fake);
+      expect(await releaseStaleReservations(new Date(Date.now() + 3 * 60_000)), label).toBe(1);
+      const after = await row(r.purchase.id);
+      expect(after.status, label).toBe("VOIDED");
+      const auths = calls.filter((c) => c.op === "authorize");
+      expect(new Set(auths.map((c) => c.args.requestId)).size, label).toBe(1); // replayed with the same request id
+      expect(ops().filter((o) => o === "capture"), label).toHaveLength(0);
+    }
+  });
+
+  it("a popup order captured before a crash stays recoverable until its capture id is read, then is recorded CAPTURED", async () => {
+    await db().update(paypalVaults).set({ status: "REVOKED" });
+    const m = await giftMandate();
+    const r = await buy(m.id, CANDLE_SET_ID);
+    const later = new Date(Date.now() + 11 * 60_000);
+    setGateway({
+      ...fake,
+      getOrderAuthorizations: async () => [{ authorizationId: "AUTH_P", status: "CAPTURED" }],
+      getOrderCaptures: async () => Promise.reject(new Error("PayPal 503")),
+    });
+    try {
+      expect(await releaseStaleReservations(later)).toBe(0);
+      expect((await row(r.purchase.id)).status).toBe("RESERVED"); // not stranded as AUTHORIZED
+      clearSweepBackoff();
+      setGateway({ ...fake, getOrderAuthorizations: async () => [{ authorizationId: "AUTH_P", status: "CAPTURED" }], getOrderCaptures: async () => [{ captureId: "CAP_P", status: "COMPLETED" }] });
+      expect(await releaseStaleReservations(later)).toBe(1);
+      const after = await row(r.purchase.id);
+      expect(after.status).toBe("CAPTURED");
+      expect(after.paypalCaptureId).toBe("CAP_P");
+      expect(ops()).not.toContain("void");
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("a pending capture can't get a refund on top of it; when the capture is declined the budget is freed once", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, captureAuthorization: async () => ({ captureId: "CAP_PEND", status: "PENDING" }) });
+    const r = await buy(m.id, CANDLE_SET_ID);
+    calls = [];
+    try {
+      await expect(refundPurchase(r.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "INVALID_STATE" });
+      expect(ops()).not.toContain("refund");
+      expect((await row(r.purchase.id)).recovery).toBe("capture_pending"); // still tracked
+      setGateway({ ...fake, getCapture: async (captureId) => ({ captureId, status: "DECLINED" }) });
+      expect(await recheckPendingCaptures()).toBe(1);
+      expect((await row(r.purchase.id)).status).toBe("FAILED");
+      expect((await buy(m.id, HEADPHONES_ID)).purchase.status).toBe("HELD"); // the order slot is free again
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("a capture status PayPal doesn't document is kept as spend, re-checked with backoff, then flagged for a human", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, captureAuthorization: async () => ({ captureId: "CAP_ODD", status: "UNDER_REVIEW" }) });
+    const r = await buy(m.id, CANDLE_SET_ID);
+    expect(r.purchase.status).toBe("CAPTURED");
+    expect(r.purchase.recovery).toBe("capture_pending");
+    setGateway({ ...fake, getCapture: async (captureId) => ({ captureId, status: "UNDER_REVIEW" }) });
+    try {
+      await recheckPendingCaptures();
+      let asked = 0;
+      setGateway({ ...fake, getCapture: async (captureId) => (asked++, { captureId, status: "UNDER_REVIEW" }) });
+      await recheckPendingCaptures();
+      expect(asked).toBe(0); // backed off
+      for (let i = 0; i < 12; i++) {
+        clearSweepBackoff();
+        await recheckPendingCaptures();
+      }
+      const after = await row(r.purchase.id);
+      expect(after.status).toBe("CAPTURED");
+      expect(after.recovery).toBe("needs_review");
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("refunds: a lost answer is replayed with the same request id; a definite failure gets a new one; never two refunds", async () => {
+    const m = await giftMandate({ maxOrders: 3, hardLimitCents: 50000 });
+    // 1. Timeout: outcome unknown. The sweep asks the capture first; PayPal shows it refunded -> REFUNDED, no second call.
+    const a = await buy(m.id, CANDLE_SET_ID);
+    setGateway({ ...fake, refundCapture: async (args) => (calls.push({ op: "refund", args }), Promise.reject(new Error("timeout"))) });
+    calls = [];
+    await expect(refundPurchase(a.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "PAYPAL_ERROR" });
+    expect((await row(a.purchase.id))).toMatchObject({ status: "CAPTURED", recovery: "refund_pending", paypalRefundId: null });
+    setGateway({ ...fake, getCapture: async (captureId) => ({ captureId, status: "REFUNDED" }) });
+    expect(await recheckPendingRefunds()).toBe(1);
+    expect((await row(a.purchase.id)).status).toBe("REFUNDED");
+    expect(ops().filter((o) => o === "refund")).toHaveLength(1);
+
+    // 2. Timeout, capture not refunded yet: the sweep replays the SAME request id.
+    const b = await buy(m.id, HEADPHONES_ID);
+    await decideApproval({ approvalId: b.approval!.id, decision: "approve", actor: "user:dashboard" });
+    setGateway({ ...fake, refundCapture: async (args) => (calls.push({ op: "refund", args }), Promise.reject(new Error("timeout"))) });
+    calls = [];
+    await expect(refundPurchase(b.purchase.id, "user:dashboard")).rejects.toBeTruthy();
+    setGateway(fake);
+    clearSweepBackoff();
+    expect(await recheckPendingRefunds()).toBe(1);
+    expect((await row(b.purchase.id)).status).toBe("REFUNDED");
+    const ids = calls.filter((c) => c.op === "refund").map((c) => c.args.requestId);
+    expect(ids).toEqual([`${b.purchase.id}:refund`, `${b.purchase.id}:refund`]);
+
+    // 3. FAILED, then CANCELLED: each next attempt is a new refund with a new request id.
+    const c = await buy(m.id, GIFT_CARD_100_ID).catch(() => null);
+    void c;
+    await resetDemo({ vault: { vaultId: "VAULT_TEST", payerEmail: "buyer@example.com" } });
+    const m2 = await giftMandate();
+    const d = await buy(m2.id, CANDLE_SET_ID);
+    calls = [];
+    for (const status of ["FAILED", "CANCELLED"]) {
+      setGateway({ ...fake, refundCapture: async (args) => (calls.push({ op: "refund", args }), { refundId: `REF_${status}`, status }) });
+      await expect(refundPurchase(d.purchase.id, "user:dashboard")).rejects.toMatchObject({ code: "PAYPAL_ERROR" });
+      expect((await row(d.purchase.id)).status).toBe("CAPTURED");
+    }
+    setGateway(fake);
+    expect((await refundPurchase(d.purchase.id, "user:dashboard")).status).toBe("REFUNDED");
+    expect(calls.filter((x) => x.op === "refund").map((x) => x.args.requestId)).toEqual([`${d.purchase.id}:refund`, `${d.purchase.id}:refund:1`, `${d.purchase.id}:refund:2`]);
+  });
+
+  it("a pending refund is asked about, never sent again", async () => {
+    const m = await giftMandate();
+    const a = await buy(m.id, CANDLE_SET_ID);
+    setGateway({ ...fake, refundCapture: async (args) => (calls.push({ op: "refund", args }), { refundId: "REF_P", status: "PENDING" }) });
+    calls = [];
+    try {
+      await refundPurchase(a.purchase.id, "user:dashboard");
+      setGateway({ ...fake, refundCapture: async (args) => (calls.push({ op: "refund", args }), { refundId: "REF_X", status: "COMPLETED" }), getRefund: async (refundId) => ({ refundId, status: "COMPLETED" }) });
+      const p = await refundPurchase(a.purchase.id, "user:dashboard"); // the user presses refund again
+      expect(p.status).toBe("REFUNDED");
+      expect(p.paypalRefundId).toBe("REF_P");
+      expect(ops().filter((o) => o === "refund")).toHaveLength(1);
+    } finally {
+      setGateway(fake);
+    }
+  });
+
+  it("a legacy stuck reservation with no recorded account is never replayed against the currently linked one", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, authorizeWithVault: async () => new Promise(() => {}) });
+    void buy(m.id, CANDLE_SET_ID);
+    await new Promise((r) => setTimeout(r, 300));
+    setGateway(fake);
+    await db().update(purchases).set({ paypalVaultId: null }).where(eq(purchases.mandateId, m.id)); // as written by an older release
+    calls = [];
+    expect(await releaseStaleReservations(new Date(Date.now() + 3 * 60_000))).toBe(1);
+    const [p] = await db().select().from(purchases).where(eq(purchases.mandateId, m.id));
+    expect(p).toMatchObject({ status: "FAILED", recovery: "needs_review" });
+    expect(ops()).toEqual([]); // no authorize against a different payer
+  });
+
+  // ---------- kill switch vs capture ----------
+
+  it("freeze while PayPal is authorizing: the purchase is voided afterwards, never captured", async () => {
+    const m = await giftMandate();
+    const g = gate<void>();
+    setGateway({ ...fake, authorizeWithVault: async (args) => (await g.p, fake.authorizeWithVault(args)) });
+    const pending = buy(m.id, CANDLE_SET_ID);
+    await new Promise((r) => setTimeout(r, 200));
+    await freezeAll({ actor: "user:dashboard", userId: "usr_demo" });
+    g.open();
+    const r = await pending;
+    setGateway(fake);
+    expect(r.purchase.status).toBe("VOIDED");
+    expect(ops()).not.toContain("capture");
+  });
+
+  it("freeze while a cleared capture is already at PayPal: reported as in flight, and recorded as captured", async () => {
+    const m = await giftMandate();
+    const g = gate<void>();
+    let sent = false;
+    setGateway({ ...fake, captureAuthorization: async (args) => ((sent = true), await g.p, fake.captureAuthorization(args)) });
+    const pending = buy(m.id, CANDLE_SET_ID);
+    while (!sent) await new Promise((r) => setTimeout(r, 20));
+    const f = await freezeAll({ actor: "user:dashboard", userId: "usr_demo" });
+    expect(f.inFlight).toBe(1);
+    expect(f.voided).toBe(0);
+    g.open();
+    const r = await pending;
+    setGateway(fake);
+    expect(r.purchase.status).toBe("CAPTURED");
+    expect(ops()).not.toContain("void");
+  });
+
+  it("freeze releases an auto-approved purchase waiting on a capture retry, not just held ones", async () => {
+    const m = await giftMandate();
+    setGateway({ ...fake, captureAuthorization: async () => Promise.reject(new PayPalError("SERVICE_UNAVAILABLE", 503)) });
+    const r = await buy(m.id, CANDLE_SET_ID);
+    setGateway(fake);
+    expect(r.purchase.status).toBe("AUTHORIZED");
+    const f = await freezeAll({ actor: "user:dashboard", userId: "usr_demo" });
+    expect(f.voided).toBe(1);
+    expect((await row(r.purchase.id)).status).toBe("VOIDED");
+  });
+
+  it("a hold isn't opened on a mandate frozen while PayPal was authorizing it", async () => {
+    const m = await giftMandate();
+    const g = gate<void>();
+    setGateway({ ...fake, authorizeWithVault: async (args) => (await g.p, fake.authorizeWithVault(args)) });
+    const pending = buy(m.id, HEADPHONES_ID);
+    await new Promise((r) => setTimeout(r, 200));
+    await freezeAll({ actor: "user:dashboard", userId: "usr_demo" });
+    g.open();
+    const r = await pending;
+    setGateway(fake);
+    expect(r.purchase.status).toBe("VOIDED");
+    expect(r.approval).toBeUndefined();
+  });
+
+  // ---------- sixth review: consent, red team, runs ----------
+
+  it("voice 'start now' with no draft in context reads the draft back instead of starting it", async () => {
+    const { mandate } = await createDraft({
+      text: "x",
+      actor: "mcp:claude-desktop",
+      draft: { title: "MCP draft", brief: "b", budgetCents: 5000, hardLimitCents: 6000, perItemMaxCents: null, allowedCategories: null, extraBlockedCategories: [], maxOrders: 1, maxQuantity: 1, noDuplicates: true, period: "once", expiresAt: null },
+    });
+    const r = await runVoiceTool("confirm_mandate", {}, "user:voice");
+    expect(r).toMatchObject({ status: "NEEDS_CONFIRM", mandateId: mandate.id });
+    expect(String(r.message)).toMatch(/drafted by claude-desktop.*Say yes/);
+    const [still] = await db().select().from(mandatesTable).where(eq(mandatesTable.id, mandate.id));
+    expect(still.status).toBe("DRAFT"); // nothing started
+  });
+
+  it("voice refund with no id never picks the latest capture: one -> asks to confirm it; several -> asks which", async () => {
+    const m = await giftMandate({ maxOrders: 3, hardLimitCents: 50000 });
+    const a = await buy(m.id, CANDLE_SET_ID);
+    const one = await runVoiceTool("refund", {}, "user:voice");
+    expect(one).toMatchObject({ status: "NEEDS_CONFIRM", purchaseId: a.purchase.id });
+    expect((await row(a.purchase.id)).status).toBe("CAPTURED");
+    const b = await buy(m.id, HEADPHONES_ID);
+    await decideApproval({ approvalId: b.approval!.id, decision: "approve", actor: "user:dashboard" });
+    const two = await runVoiceTool("refund", {}, "user:voice");
+    expect(two.status).toBe("AMBIGUOUS");
+    expect(ops()).not.toContain("refund");
+  });
+
+  it("red-team release wording follows the purchase: released, release pending, or approved by the human first", async () => {
+    const base = { id: "pur_x", quantity: 1, productName: "Watch", totalCents: 19900 };
+    expect(releaseMessage({ ...base, status: "VOIDED" })).toMatch(/No money moved/);
+    expect(releaseMessage({ ...base, status: "HELD" })).toMatch(/pending/);
+    expect(releaseMessage({ ...base, status: "HELD" })).not.toMatch(/No money moved/);
+    expect(releaseMessage({ ...base, status: "CAPTURED" })).toMatch(/approved it themselves.*paid/);
+  });
+
+  it("the red-team report reads the purchase from the step's own field, not from its text", async () => {
+    const m = await giftMandate();
+    const runId = "run_structured";
+    await db().insert(agentRuns).values({ id: runId, mandateId: m.id, brief: RED_TEAM_BRIEF, model: "test", status: "DONE" });
+    const cards = await requestPurchase({ mandateId: m.id, productId: GIFT_CARD_100_ID, quantity: 1, reason: "x", actor: RED_TEAM_ACTOR, runId });
+    const steps = [{ tool: "request_purchase", input: { tactic: "gift card" }, output: "Blocked, wording changed, no id here", at: new Date().toISOString(), purchaseId: cards.purchase.id }];
+    await db().update(agentRuns).set({ steps }).where(eq(agentRuns.id, runId));
+    const report = await redTeamReport(runId);
+    expect(report.attempts[0]).toMatchObject({ outcome: "blocked", purchaseId: cards.purchase.id });
+  });
+
+  it("a run orphaned by a restart is closed by its stale heartbeat; a live one on another instance is left alone", async () => {
+    const m = await giftMandate();
+    const other = await giftMandate();
+    const old = new Date(Date.now() - 10 * 60_000);
+    await db().insert(agentRuns).values({ id: "run_orphan", mandateId: m.id, brief: "b", model: "test", heartbeatAt: old });
+    await db().insert(agentRuns).values({ id: "run_alive", mandateId: other.id, brief: "b", model: "test", heartbeatAt: new Date() });
+    expect(await recoverStaleRuns()).toBe(1);
+    const runs = await db().select().from(agentRuns);
+    expect(runs.find((r) => r.id === "run_orphan")?.status).toBe("FAILED");
+    expect(runs.find((r) => r.id === "run_alive")?.status).toBe("RUNNING");
+    // The mandate is usable again: a new run can start on it.
+    await db().insert(agentRuns).values({ id: "run_next", mandateId: m.id, brief: "b", model: "test" });
   });
 });

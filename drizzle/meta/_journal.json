@@ -15,6 +15,13 @@
       "when": 1794259486401,
       "tag": "0001_recovery_state",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794292378141,
+      "tag": "0002_payment_identity",
+      "breakpoints": true
     }
   ]
 }

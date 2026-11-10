@@ -38,6 +38,18 @@ export type EventType =
 const g = globalThis as unknown as { __allowanceBus?: EventEmitter };
 export const bus: EventEmitter = (g.__allowanceBus ??= new EventEmitter().setMaxListeners(100));
 
+/**
+ * A live listener (an SSE stream that just closed, say) must never make a committed write look
+ * failed: the caller would retry it, and a retried money step can record twice.
+ */
+function safely(fn: () => void) {
+  try {
+    fn();
+  } catch (e) {
+    console.error("[events] listener failed", e);
+  }
+}
+
 /** Events recorded inside an open transaction wait here until it commits. */
 const pendingByTx = new WeakMap<object, (() => void)[]>();
 
@@ -51,7 +63,7 @@ export async function inTransaction<T>(fn: (tx: Tx, afterCommit: (cb: () => void
     pendingByTx.set(tx, pending);
     return fn(tx, (cb) => pending.push(cb));
   });
-  for (const cb of pending) cb();
+  for (const cb of pending) safely(cb);
   return result;
 }
 
@@ -71,6 +83,6 @@ export async function recordEvent(
     .returning();
   const pending = pendingByTx.get(conn);
   if (pending) pending.push(() => bus.emit("event", row));
-  else bus.emit("event", row);
+  else safely(() => bus.emit("event", row));
   return row;
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { intParam } from "./handler";
-import { authMode, checkPasscode, newSessionCookie, requireMcp, requireUser, requireVapi, SESSION_COOKIE, validSession } from "./auth";
+import { authMode, checkPasscode, clearSignInFailures, newSessionCookie, recordSignIn, requireMcp, requireUser, requireVapi, SESSION_COOKIE, signInBlocked, validSession } from "./auth";
 
 const req = (headers: Record<string, string>) => new Request("http://x/api", { headers });
 
@@ -46,11 +46,28 @@ describe("auth", () => {
     expect(() => requireUser(req({}))).toThrow(/locked/);
     expect(checkPasscode("")).toBe(false);
     expect(checkPasscode("anything")).toBe(false);
-    // A cookie minted while it was open (or forged with the dev secret) doesn't get in either.
-    expect(validSession(newSessionCookie().value)).toBe(false);
+    // A cookie forged with the dev secret doesn't get in either.
+    expect(validSession("dashboard.9999999999.forged")).toBe(false);
+    // A passcode alone isn't enough in production: cookies must be signed with SESSION_SECRET.
     vi.stubEnv("APP_PASSCODE", "hunter2");
+    vi.stubEnv("SESSION_SECRET", "");
+    expect(authMode()).toBe("locked");
+    expect(checkPasscode("hunter2")).toBe(false);
+    vi.stubEnv("SESSION_SECRET", "a-long-random-secret");
     expect(authMode()).toBe("passcode");
     expect(checkPasscode("hunter2")).toBe(true);
+    expect(validSession(newSessionCookie().value)).toBe(true);
+  });
+
+  it("sign-in is throttled per address after 10 wrong passcodes", () => {
+    clearSignInFailures();
+    const now = Date.now();
+    for (let i = 0; i < 10; i++) recordSignIn("1.2.3.4", false, now);
+    expect(signInBlocked("1.2.3.4", now)).toBe(true);
+    expect(signInBlocked("5.6.7.8", now)).toBe(false);
+    expect(signInBlocked("1.2.3.4", now + 16 * 60_000)).toBe(false); // the window passes
+    recordSignIn("1.2.3.4", true, now);
+    expect(signInBlocked("1.2.3.4", now)).toBe(false);
   });
 
   it("numeric query parameters: bad input is a 400-class error, never NaN in a query", () => {

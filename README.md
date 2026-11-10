@@ -79,10 +79,13 @@ The **Demo script** menu in the header replays the same story with fixed agent c
 - **It is** the control point between an agent and a payment: rules, holds, human approval, receipts, kill switch. It works for any agent that pays through Allowance.
 - **It is not** a limit enforced by PayPal itself. The rules are enforced by this service. An agent that got hold of payment credentials some other way would not be stopped by it, which is exactly why the agent here never holds any.
 - **The shop is a demo.** Allowance is the merchant of record in the sandbox and sells from a seeded catalog. It does not buy from arbitrary retailers.
-- **The kill switch** freezes every mandate, blocks all new attempts and voids open holds. A capture already sent to PayPal at that moment can still complete; refund it from its receipt.
-- A capture PayPal reports as pending is shown as pending and re-checked every minute.
+- **The kill switch** freezes every mandate, blocks all new attempts, and voids open holds and any approved purchase not yet cleared to capture. A purchase that passed its final re-check before the freeze has already been sent to PayPal and can't be recalled: the kill switch says how many, and you can refund them from their receipts.
+- **When PayPal's answer is unclear** (timeout, lost response, 5xx), nothing is assumed. The budget stays reserved and the same request is replayed with the same PayPal-Request-Id, so it can't run twice. Pending captures and refunds are re-checked with backoff, and anything PayPal keeps reporting in an unknown state is flagged "needs review" instead of guessed.
+- **The audit** checks exactly the rules listed in each report and names what it doesn't cover. Rules can't be edited after a mandate is confirmed (unfreezing keeps them), so today's rules are the ones every purchase was judged on.
+- **MCP is one client per server:** a single `MCP_API_KEY` maps to one client (`claude-desktop`). There is no multi-client key management.
+- Live events and sign-in throttling are kept in memory, so this runs as a single instance.
 
-**Before sharing a deployed URL, set `APP_PASSCODE`.** In production the dashboard is locked until it is set.
+**Before sharing a deployed URL, set `APP_PASSCODE` and `SESSION_SECRET`** (the Render blueprint generates `SESSION_SECRET`). In production the dashboard stays locked until both are set.
 
 ## Tech
 

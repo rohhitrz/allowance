@@ -7,7 +7,7 @@
  * safety comes from the policy engine, not from the model resisting.
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "../db";
 import { agentRuns, approvals, mandates, type RunStep } from "../db/schema";
 import { recordEvent } from "../events/bus";
@@ -99,9 +99,12 @@ export function purchaseMessage(r: PurchaseResult): string {
     case "FAILED":
       return `FAILED: payment for ${what} failed (${p.failureReason}). No money moved.`;
     case "HELD":
+      if (p.recovery === "void_retry") return `REJECTED: the user did not approve ${what}; releasing the hold is pending at PayPal. No money moved.`;
       return `HELD: ${what} is still waiting for the user (${failedRules(p.ruleResults, "soft").map((x) => x.detail).join(", ")}). Don't buy anything else for now.`;
     case "RESERVED":
-      return `PENDING: ${what} is waiting for the user to approve the payment in PayPal.`;
+      return p.paypalApproveUrl
+        ? `PENDING: ${what} is waiting for the user to approve the payment in PayPal.`
+        : `PENDING: PayPal hasn't confirmed the payment for ${what} yet; it is being checked. Don't buy anything else for now.`;
     default:
       return `${p.status}: ${what}`;
   }
@@ -181,14 +184,52 @@ export async function setRunStatus(runId: string, status: "RUNNING" | "WAITING_A
 let client: Anthropic | null = null;
 const anthropic = () => (client ??= new Anthropic());
 
+// ---------- run lease ----------
+// A run's process refreshes heartbeat_at every HEARTBEAT_MS for as long as it is alive, on
+// whichever instance it runs. A RUNNING / WAITING_APPROVAL run whose heartbeat is older than
+// STALE_RUN_MS belongs to a process that died (restart, deploy, crash): it is marked FAILED,
+// which frees the mandate's one-active-run slot. A healthy run elsewhere keeps its lease fresh.
+const HEARTBEAT_MS = 15_000;
+export const STALE_RUN_MS = 2 * 60_000;
+
+/** Keep a run's lease fresh until `done` settles. */
+export function keepAlive(runId: string, done: Promise<unknown>) {
+  const beat = () => db().update(agentRuns).set({ heartbeatAt: new Date() }).where(eq(agentRuns.id, runId)).catch(() => {});
+  const t = setInterval(beat, HEARTBEAT_MS);
+  t.unref?.();
+  void done.finally(() => clearInterval(t)).catch(() => {});
+}
+
+/** Close live runs whose process stopped heartbeating. Returns how many. */
+export async function recoverStaleRuns(opts: { mandateId?: string; now?: Date } = {}) {
+  const cutoff = new Date((opts.now ?? new Date()).getTime() - STALE_RUN_MS);
+  const lost = await db()
+    .update(agentRuns)
+    .set({ status: "FAILED", error: "run lost: its server stopped before it finished", endedAt: new Date() })
+    .where(
+      and(
+        inArray(agentRuns.status, ["RUNNING", "WAITING_APPROVAL"]),
+        lt(agentRuns.heartbeatAt, cutoff),
+        opts.mandateId ? eq(agentRuns.mandateId, opts.mandateId) : undefined,
+      ),
+    )
+    .returning({ id: agentRuns.id, mandateId: agentRuns.mandateId });
+  for (const r of lost) {
+    await recordEvent(db(), { actor: "system", type: "run.finished", mandateId: r.mandateId, data: { runId: r.id, status: "FAILED", error: "run lost: its server stopped" } });
+  }
+  return lost.length;
+}
+
 export async function startRun(args: { mandateId: string; brief?: string; hooks?: RunHooks }) {
   const mandate = await getMandate(args.mandateId);
   if (mandate.status !== "ACTIVE") throw new AppError("INVALID_STATE", `Mandate is ${mandate.status}`);
   const runId = id("run");
   const brief = args.brief ?? mandate.brief;
+  await recoverStaleRuns({ mandateId: mandate.id });
   await insertRunOnce(() => db().insert(agentRuns).values({ id: runId, mandateId: mandate.id, brief, model: AGENT_MODEL }));
   await recordEvent(db(), { actor: ACTOR, type: "run.started", mandateId: mandate.id, data: { runId, brief } });
   const done = runAgent(runId, mandate, brief, args.hooks ?? {});
+  keepAlive(runId, done);
   return { runId, done };
 }
 

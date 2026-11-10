@@ -8,7 +8,7 @@ import { agentRuns, approvals, events, paypalVaults, purchases, type MandateRow,
 import { approvalDto, purchaseDto } from "./dto";
 import { AppError } from "./errors";
 import { GROCERY_MANDATE_ID } from "./db/seed";
-import { startRun } from "./agent/runner";
+import { recoverStaleRuns, startRun } from "./agent/runner";
 import { startRedTeamRun } from "./agent/redteam";
 import { confirmMandate, DEMO_USER_ID } from "./mandates/service";
 import { pendingApprovals } from "./transactions/service";
@@ -75,6 +75,7 @@ export async function listEvents(opts: { since?: number; mandateId?: string; lim
 
 /** Start the shopping agent in the background. The run waits on holds and resumes after a human decides. */
 export async function startAgentRun(mandateId: string, brief?: string) {
+  await recoverStaleRuns({ mandateId }); // an orphaned run from a restart must not block the mandate forever
   const busy = await db()
     .select({ id: agentRuns.id })
     .from(agentRuns)
@@ -88,6 +89,7 @@ export async function startAgentRun(mandateId: string, brief?: string) {
 
 /** Start the red-team agent (Claude, told to break this mandate) in the background. */
 export async function startRedTeam(mandateId: string) {
+  await recoverStaleRuns({ mandateId }); // an orphaned run from a restart must not block the mandate forever
   const busy = await db()
     .select({ id: agentRuns.id })
     .from(agentRuns)

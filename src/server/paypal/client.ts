@@ -16,7 +16,19 @@ export class PayPalError extends Error {
     super(message);
     this.name = "PayPalError";
   }
+
+  /** PayPal's machine-readable reason, e.g. INSTRUMENT_DECLINED or PREVIOUS_REQUEST_IN_PROGRESS. */
+  get issue(): string | undefined {
+    const d = this.details as { details?: { issue?: string }[]; name?: string } | undefined;
+    return d?.details?.[0]?.issue ?? d?.name;
+  }
 }
+
+/**
+ * Every call gives up after this. A timeout is NOT a refusal: PayPal may have acted on the
+ * request, so callers treat it as an unknown outcome and reconcile with the same request id.
+ */
+const TIMEOUT_MS = Number(process.env.PAYPAL_TIMEOUT_MS ?? 20_000);
 
 type Link = { href: string; rel: string; method?: string };
 
@@ -44,8 +56,9 @@ async function accessToken(): Promise<string> {
     method: "POST",
     headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: "grant_type=client_credentials",
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  const json = (await res.json()) as { access_token?: string; expires_in?: number; error_description?: string };
+  const json = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error_description?: string };
   if (!res.ok || !json.access_token) {
     throw new PayPalError(`OAuth failed: ${json.error_description ?? res.statusText}`, res.status);
   }
@@ -69,9 +82,21 @@ async function request<T>(
     method,
     headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
+  let json: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    // Not JSON (a proxy's HTML error page, a cut-off body). Keep the status and debug id. On a
+    // 2xx this is an unknown outcome: PayPal did something we can't read, so it's never a refusal.
+    throw new PayPalError(
+      `${method} ${path} returned an unreadable body (${res.status}): ${text.slice(0, 120)}`,
+      res.status,
+      res.headers.get("paypal-debug-id") ?? undefined,
+    );
+  }
   if (!res.ok) {
     const debugId = res.headers.get("paypal-debug-id") ?? json.debug_id;
     const detail = json.details?.[0]?.issue ?? json.name ?? res.statusText;
